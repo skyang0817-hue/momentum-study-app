@@ -1,0 +1,13 @@
+# Cloudflare 정적 파일 응답에 붙는 보안 헤더 (Workers Static Assets의 _headers 규칙)
+# - CSP: 이 사이트(self)의 스크립트만 실행. 외부 스크립트·인라인 스크립트·eval 차단 → CDN 변조나 XSS로 악성 코드가 실행되는 길을 막음
+# - 연결은 이 사이트와 Supabase(로그인·데이터·실시간)만, 다른 사이트에 이 앱을 iframe으로 넣는 것(클릭재킹) 금지
+# - 카메라는 이 사이트에서만, 마이크·위치·결제·USB 권한은 사용하지 않음
+# - 배포할 때 YOUR-PROJECT-REF를 본인 Supabase 프로젝트 주소로 바꾼다
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com; img-src 'self' data: blob: https://YOUR-PROJECT-REF.supabase.co; media-src 'self' blob:; connect-src 'self' https://YOUR-PROJECT-REF.supabase.co wss://YOUR-PROJECT-REF.supabase.co; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(self), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()
+  Strict-Transport-Security: max-age=31536000
+  Cross-Origin-Opener-Policy: same-origin

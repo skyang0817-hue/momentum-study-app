@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>if(!/^(127\.0\.0\.1|localhost)$/.test(location.hostname)){document.documentElement.innerHTML='<p style="font:16px sans-serif;padding:20px">테스트 페이지는 개발 PC(localhost)에서만 실행됩니다.</p>';throw new Error('test page blocked');}</script>
+
+<title>problems.js 점검</title>
+<script src="../problems.js"></script>
+<script src="../problems3.js"></script>
+<script src="../problems2.js"></script>
+<script src="../essays.js"></script>
+<pre id="out"></pre>
+<script>
+// 기본 숫자 정답(파이썬 대조용) + 변형 숫자 400회씩 돌려 예외·비정상 값 점검
+const { instance } = FM_UTIL, out = { defaults: {}, issues: [], samples: {}, variants: {} };
+// 교차검증용: 문제마다 변형 숫자 60세트의 입력값과 정답
+for (const d of FM_PROBLEMS) out.variants[d.id] = [null, ...Array.from({ length: 60 }, (_, i) => (i + 11) * 104729)].map(s => {
+  const { p, c } = instance(d, s); return { p, a: d.qs.filter(q => q.type !== 'essay').map(q => q.ans(c, p)) };
+});
+for (const d of FM_PROBLEMS) {
+  const { p, c } = instance(d, null);
+  out.defaults[d.id] = d.qs.filter(q => q.type !== 'essay').map(q => q.ans(c, p));
+  for (let s = 1; s <= 400; s++) {
+    try {
+      const { p, c } = instance(d, s * 7919);
+      d.body(p, c); if (d.hint) void 0;
+      d.qs.forEach((q, i) => {
+        (q.textf ? q.textf(p) : q.text); if (q.sol) q.sol(p, c);
+        if (q.type === 'essay') return;
+        const v = q.ans(c, p);
+        if (!Number.isFinite(v)) out.issues.push(`${d.id} seed${s} 물음${i + 1} 값 ${v}`);
+      });
+      if (s === 1) out.samples[d.id] = d.qs.filter(q => q.type !== 'essay').map(q => q.ans(c, p));
+    } catch (e) { out.issues.push(`${d.id} seed${s}: ${e.message}`); break; }
+  }
+}
+document.getElementById('out').textContent = JSON.stringify(out);
+</script>

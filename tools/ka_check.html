@@ -1,0 +1,7 @@
+<!doctype html><meta charset="utf-8"><title>접속 유지 워커 점검</title>
+<!-- 실제 시간으로 keepalive.js 워커가 신호를 보내는지 확인: msedge --headless --timeout=2500 --dump-dom http://127.0.0.1:8765/tools/ka_check.html -->
+<pre id="o">대기 중</pre>
+<script>
+  let n = 0; const w = new Worker('../keepalive.js?ms=200'); w.onmessage = () => { n++; document.getElementById('o').textContent = (n >= 5 ? 'PASS' : 'WAIT') + ' 워커 신호 ' + n + '회'; };
+  w.onerror = e => { e.preventDefault && 0; document.getElementById('o').textContent = 'FAIL 워커 오류 ' + (e.message || ''); };
+</script>

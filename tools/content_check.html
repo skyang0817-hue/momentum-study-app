@@ -1,0 +1,56 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>과목 팩 문제 점검</title>
+<pre id="out">running</pre>
+<script src="../config.js"></script>
+<script src="../problems.js"></script>
+<script src="../problems3.js"></script>
+<script src="../problems2.js"></script>
+<script src="../essays.js"></script>
+<script src="../concepts.js"></script>
+<script src="../packs.js"></script>
+<script src="../mcq.js"></script>
+<script src="../fm1.js"></script>
+<script src="../net.js"></script>
+<script>
+// 모든 과목 팩의 문제를 기본 숫자 + 무작위 숫자 40세트로 만들어 보며 보기·정답·문장에 이상이 없는지 확인
+const log = [], bad = [];
+const { instance } = window.FM_UTIL;
+const P = window.SWM_PACKS;
+for (const k of window.SWM_ORDER) {
+  if (!P[k]) continue;   // 정보처리기사 팩은 ipe_check.html에서 따로 점검
+  const pk = P[k], ids = new Set(), units = new Set(pk.units.map(u => u.k));
+  let n = 0;
+  for (const d of pk.probs) {
+    if (ids.has(d.id)) bad.push(`${k} 중복 id ${d.id}`); ids.add(d.id);
+    if (!units.has(d.unit)) bad.push(`${k} ${d.id} 단원 없음 ${d.unit}`);
+    const seeds = [null, ...Array.from({ length: 40 }, (_, i) => (i + 1) * 2654435761 >>> 0)];
+    for (const seed of seeds) {
+      let ins; try { ins = instance(d, seed); } catch (e) { bad.push(`${d.id} seed ${seed} 생성 오류 ${e.message}`); break; }
+      const { p, c } = ins;
+      let txt = '';
+      try { txt += d.body(p, c); } catch (e) { bad.push(`${d.id} body 오류 ${e.message}`); }
+      d.qs.forEach((q, i) => {
+        txt += (q.textf ? q.textf(p) : q.text) || '';
+        if (q.type === 'choice') {
+          const o = q.optsf ? q.optsf(p, c) : q.opts, a = q.ans(c, p);
+          if (d.mcq && !d.ox && o.length < 4) bad.push(`${d.id} seed ${seed} 보기 ${o.length}개`);
+          if (new Set(o).size !== o.length) bad.push(`${d.id} seed ${seed} 보기 중복 ${o.join(' | ')}`);
+          if (!(a >= 0 && a < o.length)) bad.push(`${d.id} seed ${seed} 정답 번호 이상 ${a}`);
+          txt += o.join(' ');
+          if (q.sol) try { txt += q.sol(p, c); } catch (e) { bad.push(`${d.id} 해설 오류 ${e.message}`); }
+        } else if (q.type === 'num') {
+          const a = q.ans(c, p); if (!Number.isFinite(a)) bad.push(`${d.id} 정답 숫자 아님`);
+        }
+      });
+      if (/NaN|undefined|Infinity|\[object/.test(txt)) bad.push(`${d.id} seed ${seed} 문장에 NaN/undefined: ${txt.match(/.{0,40}(NaN|undefined|Infinity|\[object).{0,20}/)[0]}`);
+      n++;
+    }
+  }
+  const mix = Object.entries(pk.mockMix).map(([u, m]) => { const have = pk.calcList ? 0 : pk.probs.filter(d => !d.essay && d.unit === u && (!pk.mockPool || pk.mockPool(d))).length; return have < m ? `${u} ${have}/${m}` : ''; }).filter(Boolean);
+  if (mix.length) bad.push(`${k} 모의고사 문제 부족: ${mix.join(', ')}`);
+  const kinds = pk.kinds.map(([nm, f]) => `${nm} ${pk.probs.filter(f).length}`).join(' · ');
+  log.push(`${k} ${pk.name}: ${pk.probs.length}문제 (${kinds}) · ${n}개 인스턴스 · 개념 ${pk.concepts.length} · 요약 ${pk.summary.length}`);
+}
+document.getElementById('out').textContent = log.join('\n') + '\n' + (bad.length ? bad.slice(0, 60).map(x => 'FAIL ' + x).join('\n') : 'PASS 모든 문제 정상') + '\nDONE';
+</script>

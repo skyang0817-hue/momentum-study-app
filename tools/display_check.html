@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8">
+<script>if(!/^(127\.0\.0\.1|localhost)$/.test(location.hostname)){document.documentElement.innerHTML='<p style="font:16px sans-serif;padding:20px">테스트 페이지는 개발 PC(localhost)에서만 실행됩니다.</p>';throw new Error('test page blocked');}</script>
+
+<script src="../problems.js"></script><script src="../problems3.js"></script><script src="../problems2.js"></script><script src="../essays.js"></script>
+<pre id="out"></pre><script>
+// 화면 표시 정밀도 점검: 문제 입력값이 화면에 '근처 값'으로만 보이고 정확한 값으로는 안 보이면 보고
+const {instance}=FM_UTIL, out=[];
+const leaves=(o,pre='')=>Object.entries(o).flatMap(([k,v])=>typeof v==='number'?[[pre+k,v]]:v&&typeof v==='object'?leaves(v,pre+k+'.'):[]);
+for(const d of FM_PROBLEMS.filter(x=>!x.essay)){const bad={};
+ for(let s=0;s<120;s++){const {p,c}=instance(d,s?s*7919:null);
+  const txt=(d.body(p,c)+d.qs.map(q=>q.textf?q.textf(p):q.text).join(' ')).replace(/<[^>]+>/g,' ');
+  const nums=(txt.match(/-?\d[\d,]*(\.\d+)?/g)||[]).map(t=>+t.replace(/,/g,''));
+  for(const [k,x] of leaves(p)){ if(!x) continue;
+   for(const m of [1,100]){const v=x*m; const near=nums.some(n=>Math.abs(n-v)<=Math.abs(v)*0.01&&Math.abs(n-v)>1e-9*Math.max(1,Math.abs(v)));
+    const exact=nums.some(n=>Math.abs(n-v)<=1e-9*Math.max(1,Math.abs(v)));
+    if(near&&!exact){bad[k]=(bad[k]||0)+1;}}}}
+ const ks=Object.keys(bad); out.push((ks.length?'CHECK ':'OK    ')+d.id+(ks.length?'  '+ks.map(k=>k+'×'+bad[k]).join(', '):''));}
+document.getElementById('out').textContent=out.join('\n');
+</script>

@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>AI 출제 문제 점검</title>
+<!-- file://로 열어 ai_fm2.js 문제를 기본 숫자 + 변형 숫자 400개로 계산해 본다: 정답이 유한한 수인지, 선지 번호가 맞는지, 본문·해설에 NaN·undefined가 없는지 -->
+<script src="../problems.js"></script>
+<script src="../ai_fm2.js"></script>
+<script src="../problems4.js"></script>
+<pre id="out"></pre>
+<script>
+  const { makeR } = window.FM_UTIL, A = window.FM_AI, out = [];
+  const bad = s => /NaN|undefined|Infinity|\[object/.test(s);
+  let fails = 0;
+  // 주제 표: 70문제, 연도마다 7문제, 주제 키가 모두 정의됨
+  const tk = new Set(A.topics.map(t => t.k));
+  const byYear = {}; A.freq.forEach(f => { byYear[f[0]] = (byYear[f[0]] || 0) + 1; if (!tk.has(f[2])) { fails++; out.push('FAIL 알 수 없는 주제 ' + f); } });
+  out.push((A.freq.length === 70 && Object.values(byYear).every(n => n === 7) ? 'PASS' : (fails++, 'FAIL')) + ' 기출 빈도표 70문제 · 연도별 7문제');
+  const units = {}; A.probs.forEach(d => { units[d.unit] = (units[d.unit] || 0) + 1; });
+  out.push((Object.keys(units).length === 5 && Object.values(units).every(n => n >= 2) && units.dv === 7 ? 'PASS' : (fails++, 'FAIL')) + ' 단원별 2문제 + 파생 심화 5문제: ' + JSON.stringify(units));
+  for (const d of A.probs) {
+    let err = null, n = 0;
+    for (let s = -1; s < 400 && !err; s++) {
+      try {
+        const p = s < 0 ? d.p : d.vary(makeR(s * 2654435761 >>> 0)), c = d.calc(p);
+        let html = d.body(p, c);
+        d.qs.forEach((q, i) => {
+          html += q.textf ? q.textf(p) : q.text;
+          if (q.type === 'num') { const a = q.ans(c, p); if (!isFinite(a)) throw new Error(`물음 ${i + 1} 정답 ${a}`); }
+          if (q.type === 'choice') { const a = q.ans(c, p), o = q.optsf ? q.optsf(p, c) : q.opts; if (!(a >= 0 && a < o.length)) throw new Error(`물음 ${i + 1} 선지 ${a}`); html += o.join(); }
+          if (q.sol) html += q.sol(p, c);
+        });
+        if (d.explain) { const x = d.explain(p, c); if (x.includes('불일치')) throw new Error('풀이 근거 검산 불일치 · seed ' + s); if (!x.includes('<svg') && d.id !== 'ai-cf-paytax') throw new Error('그림 없음'); html += x; }
+        if (bad(html)) throw new Error('본문/해설에 ' + html.match(/NaN|undefined|Infinity|\[object/)[0] + ' · seed ' + s);
+        n++;
+      } catch (e) { err = e.message + ' (seed ' + s + ')'; }
+    }
+    if (err) fails++;
+    out.push(`${err ? 'FAIL' : 'PASS'} ${d.id} [${d.unit}/${d.topic}/${d.lv}/${d.pts}점/물음 ${d.qs.length}] ${err || n + '개 숫자 조합 정상'}`);
+  }
+  // 기본 숫자 정답 (사람이 따로 검산하기 위한 출력)
+  for (const d of A.probs) { const c = d.calc(d.p); out.push('ANS ' + d.id + ' ' + d.qs.map((q, i) => q.type === 'essay' ? '' : `${i + 1}:${q.type === 'num' ? (+q.ans(c, d.p)).toFixed(4) : q.ans(c, d.p)}`).filter(Boolean).join(' ')); }
+  out.unshift(`RESULT ${fails ? 'FAIL ' + fails : 'ALL PASS'}`);
+  document.getElementById('out').textContent = out.join('\n');
+</script>

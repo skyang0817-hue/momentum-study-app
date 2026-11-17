@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>if(!/^(127\.0\.0\.1|localhost)$/.test(location.hostname)){document.documentElement.innerHTML='<p>테스트 페이지는 개발 PC(localhost)에서만 실행됩니다.</p>';throw new Error('test page blocked');}</script>
+<title>체험 모드 점검</title>
+<pre id="out">running</pre>
+<iframe id="f" src="../index.html?demo&subj=fm2" style="width:1200px;height:900px"></iframe>
+<script>
+// 체험 모드(?demo): 서버 없이 예시 기록으로 오답 패턴이 보이는지, 실제 저장 공간과 분리되는지
+const log = [], ok = (c, m) => log.push((c ? 'PASS ' : 'FAIL ') + m);
+const f = document.getElementById('f'), wait = ms => new Promise(r => setTimeout(r, ms));
+f.onload = async () => {
+  try { f.contentWindow.localStorage.clear(); f.contentWindow.localStorage.setItem('cpa-fm-v1:local', '{"progress":{"keep":1}}'); f.contentWindow.location.reload(); await new Promise(r => f.onload = r); } catch (e) { }
+  const W = f.contentWindow, D = W.document, q = s => D.querySelector(s), qa = s => [...D.querySelectorAll(s)];
+  await wait(800);
+  try {
+    W.confirm = () => true;
+    ok(q('#savebadge').textContent.includes('체험 모드') && !q('#loginOv').classList.contains('on'), '체험 모드 배지 · 로그인 없이 열림: ' + q('#savebadge').textContent);
+    ok(q('#p-plan').classList.contains('on'), '바로 오답 패턴 화면');
+    const pat = () => q('#pat-box').textContent;
+    ok(qa('#pat-box .pat-f').length === 2 && pat().includes('공식 혼동') && pat().includes('단위·% 실수') && pat().includes('2.5배'), '예시 패턴 2개(공식 혼동·단위 실수 2.5배): ' + qa('#pat-box .pat-f').map(x => x.textContent.replace(/\s+/g, ' ').slice(0, 60)).join(' | '));
+    ok(pat().includes('풀이 15회') && pat().includes('오답 9회'), '예시 기록: 풀이 15회 · 오답 9회');
+    ok(qa('#pat-box [data-act="pat-cx"]').length > 0, '패턴 옆에 관련 개념 버튼');
+    ok(q('#pat-box .pat-r') && q('#pat-box .pat-r').textContent.includes('3회'), '반복 실수 예시(같은 문제 3회)');
+    ok(!q('#plan-meta') && !q('#pat-box').textContent.includes('시험형') && Object.keys(JSON.parse(W.localStorage.getItem('cpa-fm-v1:demo')).progress).every(k => !k.startsWith('mt:')), '메타인지 확인 없음 · 예시는 문제은행 풀이 기록');
+    ok(!q('#note-box') && !q('textarea[data-note]'), '내 정리 칸·모아보기 없음');
+    // 직접 눌러 보기: 남은 오답에 이유를 고르면 바로 바뀜
+    const b = q('#pat-box .pat-ti [data-r="calc"]'), before = q('.pat-bar') && qa('.pat-bar').find(x => x.textContent.includes('계산 실수')).textContent;
+    b.click(); await wait(50);
+    const after = qa('.pat-bar').find(x => x.textContent.includes('계산 실수')).textContent;
+    ok(before !== after, '이유를 고르면 순위가 바로 바뀜: ' + before + ' → ' + after);
+    const st = () => JSON.parse(W.localStorage.getItem('cpa-fm-v1:demo') || '{}');
+    ok(st().settings && st().settings.demo && JSON.parse(W.localStorage.getItem('cpa-fm-v1:local')).progress.keep === 1, '체험 기록은 별도 저장 공간 (로컬 모드 기록은 그대로)');
+    // 다시 열어도 바꾼 내용 유지, '처음으로'로 되돌리기
+    W.location.reload(); await new Promise(r => f.onload = r); await wait(800);
+    const W2 = f.contentWindow, q2 = s => W2.document.querySelector(s), qa2 = s => [...W2.document.querySelectorAll(s)]; W2.confirm = () => true;
+    ok(qa2('.pat-bar').find(x => x.textContent.includes('계산 실수')).textContent === after, '다시 열어도 체험하며 바꾼 내용 유지');
+    q2('[data-act="demo-reset"]').click(); await wait(100);
+    ok(qa2('.pat-bar').find(x => x.textContent.includes('계산 실수')).textContent === before, '예시 기록 처음으로');
+    ok(!qa2('script[src*="supabase"]').length && !W2.supabase, '서버 라이브러리를 불러오지 않음');
+    // 푼 문제가 하나뿐이면 숫자를 누르자마자 그 문제로
+    { const st = JSON.parse(W2.localStorage.getItem('cpa-fm-v1:demo')), pid = Object.keys(st.progress).find(k => (st.progress[k].hist || []).some(h => h.sc < h.mx));
+      st.progress = { [pid]: Object.assign(st.progress[pid], { hist: [st.progress[pid].hist.find(h => h.sc < h.mx)], n: 1 }) }; W2.localStorage.setItem('cpa-fm-v1:demo', JSON.stringify(st));
+      W2.location.reload(); await new Promise(r => f.onload = r); await wait(800);
+      const W3 = f.contentWindow, q3 = s => W3.document.querySelector(s);
+      ok(q3('#pat-box .pat-head').textContent.includes('풀이 1회') && q3('#pat-box .pat-head').textContent.includes('오답 1회'), '풀이 1회 · 오답 1회');
+      q3('[data-act="pat-list"][data-k="bad"]').click(); await wait(250);
+      ok(q3('#p-bank').classList.contains('on') && q3('#cd-b-' + pid) && !q3('#cd-b-' + pid).classList.contains('fold') && !q3('#pat-list'), '문제가 하나면 목록 없이 바로 그 문제로 이동');
+      W3.document.querySelector('[data-tab="plan"]') ? W3.document.querySelector('[data-tab="plan"]').click() : 0; await wait(150);
+      q3('[data-act="pat-list"][data-k="all"]').click(); await wait(250);
+      ok(q3('#p-bank').classList.contains('on'), '풀이 숫자도 같은 문제로'); }
+  } catch (e) { log.push('ERROR ' + e.message + ' ' + e.stack); }
+  document.getElementById('out').textContent = log.join('\n');
+};
+</script>

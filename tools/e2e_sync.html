@@ -1,0 +1,268 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>if(!/^(127\.0\.0\.1|localhost)$/.test(location.hostname)){document.documentElement.innerHTML='<p style="font:16px sans-serif;padding:20px">테스트 페이지는 개발 PC(localhost)에서만 실행됩니다.</p>';throw new Error('test page blocked');}</script>
+
+<title>Supabase 연동 점검</title>
+<pre id="out">running</pre>
+<div id="host"></div>
+<script>
+// 가짜 Supabase로 로그인 → 서버 저장 → 배정 반영 → 서버 기록 병합 → 관리자 화면 → 배정/해제 → 권한 차단을 확인
+try { localStorage.removeItem('swm-subj'); } catch (e) { }   // 과목 선택 초기화 (2차 재무관리부터 점검)
+const log = [], ok = (c, m) => { log.push((c ? 'PASS ' : 'FAIL ') + m); document.getElementById('out').textContent = log.join('\n') + '\n…'; };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+window.FAKE_DB = {
+  seq: 100, session: null, calls: [],
+  users: [{ id: 'u-admin', email: 'admin@t.kr', pw: 'pw1' }, { id: 'u-1', email: 'kim@t.kr', pw: 'pw2' }, { id: 'u-2', email: 'lee@t.kr', pw: 'pw3' }],
+  tables: {
+    profiles: [{ id: 'u-admin', name: '관리자', role: 'admin', created_at: '1' }, { id: 'u-1', name: '김', role: 'member', created_at: '2' }, { id: 'u-2', name: '이', role: 'member', created_at: '3' }],
+    progress: [
+      // 다른 기기에서 먼저 푼 기록 (서버에만 있음) → 로그인하면 내려와야 함
+      { user_id: 'u-1', pid: 'dv-binomial', data: { n: 2, box: 2, due: '2099-01-01', ok: 1, last: '2026-01-01', hist: [{ d: '2026-01-01', sc: 6, mx: 6 }], u: 5 } },
+      { user_id: 'u-2', pid: 'cb-mirr', data: { n: 1, box: 1, due: '2000-01-01', ok: 0, last: '2026-01-01', hist: [{ d: '2026-01-01', sc: 2, mx: 5 }], u: 5 } },
+      { user_id: 'u-2', pid: 'dv-binomial', data: { n: '<i id=xss3>', box: 1, due: '"><img id=xss4 src=x>', ok: 0, last: '<img id=xss5 src=x>', hist: [{ d: '2026-01-01', sc: 2, mx: 5 }], u: 5 } },
+      { user_id: 'u-1', pid: 'dm:fm2:2020-01-01', data: { sub: 1, score: '<img id=xssdm1 src=x>', max: '<b id=xssdm2>', pend: '<i id=xssdm3>', items: [{ pid: '<img id=xssdm4 src=x>', seed: 1 }], u: 5 } },
+      { user_id: 'u-1', pid: 'dm:fm2:9<img id=xssdm5 src=x>', data: { items: [], u: 5 } },
+      { user_id: 'u-2', pid: 'j:9<img id=xss6 src=x>', data: { items: [{ s: '09:00', e: '10:00', title: 't' }], u: 5 } },
+    ].concat([...Array(7)].map((_, i) => { const d = new Date(Date.UTC(2026, 9, 29 + i)).toISOString().slice(0, 10), s = new Date(d + 'T09:00:00+09:00').getTime(); return { user_id: 'u-admin', pid: 't:' + d, data: { segs: [{ s, e: s + 3600000 }], u: 1 } }; })),
+    mock_results: [{ id: 'evil-1', user_id: 'u-2', data: { d: '<img id=xss1 src=x>', score: '<b id=xss2>' }, created_at: '0' }],
+    assignments: [{ id: 1, user_id: 'u-1', unit: 'bd', note: '듀레이션 보강', active: true, created_at: '1' }],
+  },
+};
+async function boot() {
+  const html = (await (await fetch('../index.html')).text())
+    .replace('<head>', '<head><base href="../">')
+    .replace(/<script src="config\.js[^"]*"><\/script>/, '<script>window.FM_CONFIG={supabaseUrl:"https://fake.supabase.co",supabaseAnonKey:"x",pushKey:"BEDPUFb7Qi_gcdwbrIP16DJP93UGwLEnVb4v2GIw-tYROE8nEFD77SDLfbhBG5mP-35KdPgAI-3bKOzg6NgdeTQ"}<\/script><script src="tools/fake_sb.js"><\/script><script src="tools/fake_push.js"><\/script>');
+  const f = document.createElement('iframe'); f.style.cssText = 'width:1200px;height:900px';
+  const loaded = new Promise(r => f.addEventListener('load', r, { once: true }));
+  f.srcdoc = html;                                   // DOM에 붙이기 전에 srcdoc를 넣어 빈 문서 load와 섞이지 않게
+  document.getElementById('host').replaceChildren(f);
+  await loaded;
+  for (let i = 0; i < 50 && !(f.contentDocument && f.contentDocument.querySelector('#savebadge') && f.contentWindow.FM_PROBLEMS); i++) await wait(100);
+  await wait(400);
+  return f.contentWindow;
+}
+// 두 기기 동기화: 앱 복귀 시 받아 오기, 따로 푼 기록 합치기, 다시 채점, 입력 보존
+(async () => { try {
+  let W = await boot(), D = W.document, q = s => D.querySelector(s);
+  W.localStorage.clear();
+  q('#lgEmail').value = 'kim@t.kr'; q('#lgPw').value = 'pw2'; q('#loginForm').requestSubmit(); await wait(800);
+  const PID = 'dv-binomial', row = (pid = PID) => FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === pid);
+  const loc = (pid = PID) => JSON.parse(W.localStorage.getItem('cpa-fm-v1:u-1')).progress[pid];
+  const card = () => q('#cd-b-' + PID), round = () => (card().textContent.match(/\d+회독/) || [''])[0];
+  const vis = v => { Object.defineProperty(D, 'visibilityState', { configurable: true, get: () => v }); Object.defineProperty(D, 'hidden', { configurable: true, get: () => v === 'hidden' }); D.dispatchEvent(new W.Event('visibilitychange')); };
+  const resume = async () => { vis('hidden'); await wait(200); vis('visible'); await wait(11000); };
+  const solve = async () => { card().querySelector('[data-act="grade"]').click(); await wait(100); card().querySelectorAll('[data-act="self"][data-v="1"]').forEach(b => b.click()); await wait(1500); };
+  const pc = (extra) => { const r = row(); r.data = Object.assign({}, r.data, { n: r.data.n + extra.length, hist: r.data.hist.concat(extra), u: Date.now() }); };
+  q('[data-tab="bank"]').click(); await wait(200);
+  ok(loc().n === 2 && round() === '3회독', '로그인 시 서버 기록 받음: ' + round());
+  // 1. 앱 복귀
+  pc([{ d: '2026-11-01', sc: 6, mx: 6, i: 'pc1', t: 1 }, { d: '2026-11-02', sc: 3, mx: 6, i: 'pc2', t: 2 }, { d: '2026-11-03', sc: 6, mx: 6, i: 'pc3', t: 3 }]);
+  await resume();
+  ok(loc().n === 5 && loc().hist.length === 4, '앱 복귀 시 다른 기기 기록을 받음: n=' + loc().n);
+  ok(round() === '6회독', '앱 복귀 시 화면의 회독 수도 갱신: ' + round());
+  // 2. 받아 오기 전에 양쪽에서 따로 풂 (복귀 없이)
+  pc([{ d: '2026-11-03', sc: 6, mx: 6, i: 'pc4', t: 4 }]);
+  await solve();
+  ok(row().data.n === 7 && row().data.hist.length === 6, '따로 푼 기록이 서로 지우지 않음: 서버 n=' + row().data.n + ' hist=' + row().data.hist.length);
+  ok(['pc1', 'pc2', 'pc3', 'pc4'].every(i => row().data.hist.some(h => h.i === i)) && row().data.hist.some(h => h.i && !/^pc/.test(h.i)), '양쪽 풀이가 모두 남음: ' + row().data.hist.map(h => h.i).join());
+  ok(loc().n === 7, '합친 결과가 이 기기에도 저장');
+  // 3. 다시 채점해도 풀이는 하나
+  const before = row().data.n, pid2 = 'cb-mirr', fn = () => q('#cd-b-' + pid2);
+  q('[data-tab="mock"]').click(); await wait(50); q('[data-tab="bank"]').click(); await wait(200);
+  fn().querySelector('[data-act="grade"]').click(); await wait(100); fn().querySelectorAll('[data-act="self"][data-v="1"]').forEach(b => b.click()); await wait(1500);
+  const r1 = row(pid2).data; ok(r1 && r1.n === 1 && r1.hist.length === 1, '새 문제 첫 풀이 기록');
+  const e = fn().querySelector('input'); e.value = '123'; e.dispatchEvent(new W.Event('input', { bubbles: true })); await wait(50);
+  fn().querySelector('[data-act="grade"]').click(); await wait(100); fn().querySelectorAll('[data-act="self"][data-v="1"]').forEach(b => b.click()); await wait(1500);
+  ok(row(pid2).data.n === 1 && row(pid2).data.hist.length === 1 && row(pid2).data.hist[0].i === r1.hist[0].i, '다시 채점해도 풀이가 늘지 않음: n=' + row(pid2).data.n);
+  ok(row().data.n === before, '다른 문제 기록은 그대로');
+  // 4. 입력 중에는 화면을 다시 그리지 않고, 입력한 값도 유지
+  q('[data-tab="mock"]').click(); await wait(50); q('[data-tab="bank"]').click(); await wait(200);
+  const c3 = [...D.querySelectorAll('#bank-list .card')].find(x => x.id !== 'cd-b-' + PID && x.id !== 'cd-b-' + pid2 && x.querySelector('input'));
+  c3.querySelector('.card-head').click(); await wait(30); const c3id = c3.id, i3 = c3.querySelector('input'); i3.focus(); i3.value = '77'; i3.dispatchEvent(new W.Event('input', { bubbles: true }));
+  pc([{ d: '2026-11-04', sc: 6, mx: 6, i: 'pc5', t: 5 }]);
+  await resume();
+  ok(loc().hist.some(h => h.i === 'pc5') && q('#' + c3id + ' input') === i3 && i3.value === '77', '입력 중이면 기록만 받고 입력칸은 그대로');
+  i3.blur(); pc([{ d: '2026-11-04', sc: 6, mx: 6, i: 'pc6', t: 6 }]);
+  await resume();
+  ok(loc().hist.some(h => h.i === 'pc6') && q('#' + c3id + ' input').value === '77', '입력을 멈춘 뒤 다시 그려도 입력한 답 유지');
+  // 5. 예전 기록(i 없음)은 같은 내용이면 늘어나지 않고, 이 기기에만 남은 기록은 되살아남
+  const legacy = [{ d: '2026-10-01', sc: 2, mx: 5 }, { d: '2026-10-01', sc: 2, mx: 5 }, { d: '2026-10-02', sc: 5, mx: 5 }];
+  const lsk = 'cpa-fm-v1:u-1', ls = JSON.parse(W.localStorage.getItem(lsk));
+  ls.progress['cb-legacy'] = { n: 3, box: 1, ok: 1, hist: legacy.slice(), u: 100 };
+  ls.progress['cb-lost'] = { n: 3, box: 1, ok: 1, hist: legacy.slice(), u: 100 };
+  FAKE_DB.tables.progress.push({ user_id: 'u-1', pid: 'cb-legacy', data: { n: 3, box: 1, ok: 1, hist: legacy.slice(), u: 100 } });
+  FAKE_DB.tables.progress.push({ user_id: 'u-1', pid: 'cb-lost', data: { n: 1, box: 1, ok: 0, hist: [{ d: '2026-11-01', sc: 0, mx: 5, i: 'late', t: 9 }], u: 200 } });
+  W.localStorage.setItem(lsk, JSON.stringify(ls));
+  W = await boot(); D = W.document; await wait(1500);
+  ok(row('cb-legacy').data.n === 3 && row('cb-legacy').data.hist.length === 3, '예전 기록이 같으면 그대로: n=' + row('cb-legacy').data.n);
+  ok(row('cb-lost').data.n === 4 && row('cb-lost').data.hist.length === 4, '덮어쓰여 사라졌던 기록이 이 기기에 있으면 합쳐서 복구: n=' + row('cb-lost').data.n);
+  ok(row('cb-lost').data.ok === 1, '맞은 횟수도 합쳐짐: ok=' + row('cb-lost').data.ok);
+  // 6. 입력한 답: 다른 기기에서 이어 쓰기 → 채점 후 지난 답으로
+  const lsk6 = 'cpa-fm-v1:u-1', newDevice = async () => { W.localStorage.removeItem(lsk6); W = await boot(); D = W.document; await wait(1200); };
+  q('[data-tab="bank"]').click(); await wait(200);
+  const c6 = [...D.querySelectorAll('#bank-list .card')].find(x => x.id !== 'cd-b-' + PID && x.id !== 'cd-b-' + pid2 && x.id !== c3id && x.querySelector('input.my1')), id6 = c6.id, pid6 = id6.replace('cd-b-', '');
+  const i6 = c6.querySelector('input.my1'); i6.value = '321'; i6.dispatchEvent(new W.Event('input', { bubbles: true })); await wait(1800);
+  ok(row(pid6) && row(pid6).data.dr && row(pid6).data.dr.a[i6.dataset.qi] === '321' && !row(pid6).data.n, '입력한 답이 채점 전에도 서버에 저장되고 회독은 안 늘어남');
+  await newDevice(); q('[data-tab="bank"]').click(); await wait(300);
+  ok(q('#' + id6 + ' input.my1').value === '321', '다른 기기에서 열면 입력한 답이 그대로 보임');
+  // AI 출제: 켜 둔 기기에 다른 기기의 답이 들어옴
+  q('[data-tab="aiw"]').click(); await wait(300);
+  const AIP = 'cb-x-wacc', aic = () => q('#cd-aw-' + AIP);
+  FAKE_DB.tables.progress.push({ user_id: 'u-1', pid: AIP, data: { n: 0, box: 0, due: null, ok: 0, hist: [], dr: { s: null, a: { 0: '555' } }, u: Date.now() } });
+  await resume();
+  ok(aic().querySelector('input.my1').value === '555', 'AI 출제: 앱 복귀 시 다른 기기에서 쓴 답이 보임');
+  aic().querySelector('[data-act="grade"]').click(); await wait(100); aic().querySelectorAll('[data-act="self"][data-v="1"]').forEach(b => b.click()); await wait(1500);
+  ok(row(AIP).data.n === 1 && row(AIP).data.la && row(AIP).data.la.a[0] === '555' && !row(AIP).data.dr, 'AI 출제: 채점하면 지난 답으로 옮겨지고 회독 기록');
+  await newDevice(); q('[data-tab="aiw"]').click(); await wait(300);
+  ok(/2회독/.test(aic().textContent) && aic().querySelector('.last-ans').textContent.includes('555') && !aic().querySelector('input.my1').value, 'AI 출제: 다른 기기에서 회독 수와 지난 내 답이 보이고, 새 숫자 입력칸은 비어 있음');
+  row(AIP).data = Object.assign({}, row(AIP).data, { la: { d: '2026-11-04', s: null, a: { 0: '<img id=xssla src=x>' }, r: {} }, u: Date.now() });
+  await resume();
+  ok(aic().querySelector('.last-ans').textContent.includes('<img') && !D.querySelector('#xssla'), '지난 답은 글자로만 표시 (스크립트 차단)');
+  // 7. 채점하기만 눌러도 기록, 직접 채점하면 같은 풀이의 점수를 고침
+  const P7 = 'ai-cb-breakeven', c7 = () => q('#cd-aw-' + P7), q7 = W.FM_AI.probs.find(d => d.id === P7).qs.length;
+  q('[data-tab="aiw"]').click(); await wait(300);
+  const i7 = c7().querySelector('input.my1'); i7.value = '111'; i7.dispatchEvent(new W.Event('input', { bubbles: true }));
+  c7().querySelector('[data-act="grade"]').click(); await wait(1500);
+  const r7 = row(P7).data, h7 = r7.hist[0];
+  ok(r7.n === 1 && r7.hist.length === 1 && h7.mx === q7 && h7.sc === 0 && r7.la.a[i7.dataset.qi] === '111' && !r7.dr && r7.box === 1, '채점하기만 눌러도 회독과 답이 서버에 기록: n=' + r7.n);
+  ok(/기록했어요/.test(c7().querySelector('.verdict').textContent), '직접 채점이 남았다는 안내: ' + c7().querySelector('.verdict').textContent.slice(0, 40));
+  q('[data-tab="bank"]').click(); await wait(100); q('[data-tab="aiw"]').click(); await wait(300);
+  const left = [...c7().querySelectorAll('[data-act="self"][data-v="1"]')];
+  ok(left.length && !left[0].closest('[hidden]') && c7().querySelector('input.my1').value === '111' && /직접 채점 남음/.test(c7().textContent), '탭을 옮겨도 직접 채점할 수 있게 카드가 남음');
+  left.forEach(b => b.click()); await wait(1500);
+  const r8 = row(P7).data;
+  ok(r8.n === 1 && r8.hist.length === 1 && r8.hist[0].i === h7.i && r8.hist[0].sc === left.length && Object.values(r8.la.r).filter(Boolean).length === left.length, '직접 채점하면 회독은 그대로, 같은 풀이의 점수만 바뀜: ' + r8.hist[0].sc + '/' + r8.hist[0].mx);
+  await newDevice(); q('[data-tab="aiw"]').click(); await wait(300);
+  ok(/2회독/.test(c7().textContent) && c7().querySelector('.last-ans').textContent.includes('111') && c7().querySelector('.hist').textContent.includes('풀이 기록 1회'), '다른 기기에서 회독·기록·내 답이 보임');
+  // 8. 목록 접기: 한 줄 표시, 입력 유지, 다음 문제, 다시 그려도 상태 유지
+  { const lb = W.SWM_PACKS.fm2.labels, ids = [...W.SWM_PACKS.fm2.probs, ...W.FM_AI.probs].map(d => d.id);
+    ok(ids.every(i => lb[i]) && Object.keys(lb).every(i => ids.includes(i)), '2차 재무관리 모든 문제에 핵심 개념이 있음: ' + ids.length + '문제');
+    ok(ids.every(i => lb[i].split(', ').length <= 2), '핵심 개념은 두 개까지'); }
+  q('[data-tab="aiw"]').click(); await wait(300);
+  ok(q('#cd-aw-ai-cb-breakeven .card-head').textContent.trim() === '자본예산 - 재무적 손익분기점, 가격 민감도', '접힌 줄은 단원명 - 핵심 개념만: ' + q('#cd-aw-ai-cb-breakeven .card-head').textContent.trim());
+  q('[data-tab="aiw"]').click(); await wait(300);
+  const all = [...D.querySelectorAll('#aiw-list .card')], a0 = all[0], a1 = all[1];
+  ok(all.every(c => c.classList.contains('fold')) && D.querySelector('#aiw-list .ai-why').classList.contains('off') && !a0.querySelector('.card-body').offsetParent && a0.querySelector('.card-head').offsetParent, 'AI 출제 목록은 모두 접혀 한 줄씩');
+  const fid = a0.id; a0.querySelector('.card-head').click(); await wait(30);
+  ok(!q('#' + fid).classList.contains('fold') && q('#' + fid).previousElementSibling.classList.contains('off') === false && q('#' + fid + ' .card-head').getAttribute('aria-expanded') === 'true', '누른 문제만 펼쳐지고 추천 이유도 보임');
+  { const bg = id => W.getComputedStyle(q('#' + id + ' .card-head')).backgroundColor; ok(bg(fid) !== bg(all[1].id), '펼친 문제는 접힌 문제와 색이 다름: ' + bg(fid) + ' / ' + bg(all[1].id)); }
+  const fi = q('#' + fid + ' input.my1'); if (fi) { fi.value = '42'; fi.dispatchEvent(new W.Event('input', { bubbles: true })); await wait(30); }
+  q('#' + fid + ' [data-act="fold-close"]').click(); await wait(30);
+  ok(q('#' + fid).classList.contains('fold') && (!fi || (q('#' + fid + ' input.my1').value === '42' )), '접어도 입력한 답 유지');
+  q('#' + fid + ' .card-head').click(); await wait(30); q('#' + fid + ' [data-act="fold-next"]').click(); await wait(30);
+  ok(q('#' + fid).classList.contains('fold') && !q('#' + a1.id).classList.contains('fold'), '다음 문제: 지금 문제는 접고 다음 문제를 펼침');
+  q('[data-tab="bank"]').click(); await wait(200); q('[data-tab="aiw"]').click(); await wait(300);
+  ok(!q('#' + a1.id).classList.contains('fold'), '탭을 옮겼다 돌아와도 펼친 문제 유지');
+  const last = D.querySelector('#aiw-list .card:last-child'); last.querySelector('.card-head').click(); await wait(30);
+  ok(W.getComputedStyle(last.querySelector('[data-act="fold-next"]')).display === 'none', '마지막 문제에는 다음 문제 버튼 없음');
+  q('[data-tab="bank"]').click(); await wait(200);
+  const bc = D.querySelector('#bank-list .card:not(.st-ok)'), bid = bc.id; bc.querySelector('.card-head').click(); await wait(30);
+  ok(!q('#' + bid).classList.contains('fold') && D.querySelectorAll('#bank-list .card.fold').length > 50, '문제은행도 같은 방식');
+  q('[data-tab="mock"]').click(); await wait(100);
+  ok(!D.querySelector('#p-mock .card.foldable'), '모의고사 화면은 접지 않음');
+  // 9. 펼친 문제의 물음마다 지난 풀이의 맞음/틀림
+  q('[data-tab="aiw"]').click(); await wait(300);
+  const P9 = 'ai-cb-realopt', c9 = () => q('#cd-aw-' + P9), n9 = W.FM_AI.probs.find(d => d.id === P9).qs.length;
+  c9().querySelector('.card-head').click(); await wait(30);
+  ok(!c9().querySelector('.q-last'), '처음 푸는 문제에는 지난 결과 없음');
+  c9().querySelector('[data-act="grade"]').click(); await wait(100);
+  const s9 = [...c9().querySelectorAll('[data-act="self"][data-v="1"]')]; s9.slice(0, 1).forEach(b => b.click()); await wait(1500);
+  const r9 = row(P9).data.la.r;
+  await newDevice(); q('[data-tab="aiw"]').click(); await wait(300); c9().querySelector('.card-head').click(); await wait(30);
+  const m9 = [...c9().querySelectorAll('.q .q-last')];
+  ok(m9.length === n9 && m9.every((x, i) => x.classList.contains(r9[i] === true ? 'ok' : r9[i] === false ? 'no' : 'none')), '다른 기기에서 펼치면 물음마다 지난 맞음/틀림 표시: ' + m9.map(x => x.textContent.replace('지난 풀이: ', '')).join(','));
+  ok(m9.some(x => x.classList.contains('no')) && m9.some(x => x.classList.contains('ok')), '맞은 물음과 틀린 물음이 구분됨');
+  c9().querySelector('[data-act="grade"]').click(); await wait(100);
+  ok(!c9().querySelector('.q-last'), '새로 채점하면 지난 결과 대신 이번 결과');
+  FAKE_DB.tables.progress.push({ user_id: 'u-1', pid: 'ai-bd-ride', data: { n: 1, box: 1, ok: 0, last: '2026-10-01', hist: [{ d: '2026-10-01', sc: 1, mx: 5 }], u: Date.now() } });
+  await resume();
+  q('[data-tab="bank"]').click(); await wait(100); q('[data-tab="aiw"]').click(); await wait(300);
+  ok(q('#cd-aw-ai-bd-ride .q-last-none') && !q('#cd-aw-ai-bd-ride .q-last'), '예전 풀이는 물음별 기록이 없다고 안내');
+  // 10. 숫자 바꾸기: 다른 기기·다른 화면도 같은 숫자, 입력 중인 답은 지키기
+  q('[data-tab="aiw"]').click(); await wait(300);
+  const P10 = 'ai-bd-cds', cw = () => q('#cd-aw-' + P10), cf = () => q('#cd-af-' + P10), body = c => c.querySelector('.qbody').textContent;
+  cw().querySelector('.card-head').click(); await wait(30);
+  const b0 = body(cw()); cw().querySelector('[data-act="reroll"]').click(); await wait(1500);
+  const b1 = body(cw()), rr = row(P10) && row(P10).data.rr;
+  ok(rr && typeof rr.s === 'number' && rr.n === 0 && b1 !== b0, '숫자 바꾸기가 서버에 저장되고 숫자가 바뀜: rr=' + JSON.stringify(rr) + ' 같은숫자=' + (b1 === b0));
+  const i10 = cw().querySelector('input.my1'); i10.value = '909'; i10.dispatchEvent(new W.Event('input', { bubbles: true })); await wait(2200);
+  ok(row(P10).data.dr && row(P10).data.dr.s === rr.s && row(P10).data.dr.a[i10.dataset.qi] === '909', '바꾼 숫자로 입력 중인 답도 저장');
+  q('[data-tab="aif"]').click(); await wait(300);
+  ok(body(cf()) === b1, '같은 기기의 다른 AI 화면도 같은 숫자');
+  await newDevice(); q('[data-tab="aiw"]').click(); await wait(300);
+  ok(body(cw()) === b1 && cw().querySelector('input.my1').value === '909', '다른 기기에서 열면 같은 숫자와 입력한 답');
+  // 켜 둔 기기: 손대지 않은 카드는 바뀌고, 입력 중인 카드는 유지
+  const P11 = 'ai-dv-ccs', c11 = () => q('#cd-aw-' + P11), b11 = body(c11());
+  FAKE_DB.tables.progress.push({ user_id: 'u-1', pid: P11, data: { n: 0, box: 0, due: null, ok: 0, hist: [], rr: { n: 0, s: 123456 }, u: Date.now() } });
+  const r10 = row(P10); r10.data = Object.assign({}, r10.data, { rr: { n: 0, s: 654321 }, u: Date.now() + 1000 });
+  await resume();
+  ok(body(c11()) !== b11, '앱 복귀 시 다른 기기에서 바꾼 숫자를 받음');
+  ok(body(cw()) === b1 && cw().querySelector('input.my1').value === '909', '입력 중인 문제는 숫자와 답을 그대로 유지');
+  // 채점하면 다음 회독은 양쪽 모두 같은 숫자
+  c11().querySelector('[data-act="grade"]').click(); await wait(100); c11().querySelectorAll('[data-act="self"][data-v="1"]').forEach(b => b.click()); await wait(1500);
+  ok(row(P11).data.n === 1 && !row(P11).data.rr && row(P11).data.la.s === 123456, '채점하면 바꾼 숫자가 지난 풀이로 남고 지워짐');
+  q('[data-tab="bank"]').click(); await wait(100); q('[data-tab="aiw"]').click(); await wait(300); const b12 = body(c11());
+  await newDevice(); q('[data-tab="aiw"]').click(); await wait(300);
+  ok(body(c11()) === b12, '다음 회독은 기기와 상관없이 같은 숫자');
+  // 11. 출석 사진 없이 공부 시간 시작
+  { const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date()), P = 't:' + day, T = FAKE_DB.tables, tr = () => row(P);
+    await newDevice();
+    const b = () => q('#stBtn'), st = () => q('#stimer').classList;
+    ok(st().contains('idle') && !b().hidden && b().textContent.includes('시작') && q('#stState').textContent === '시작 전', '출석 전에도 시작 버튼이 보임');
+    b().click(); await wait(1500);
+    ok(st().contains('run') && q('#stState').textContent === '측정 중' && tr() && tr().data.segs.length === 1 && !(T.attendance || []).length, '사진 없이 시작하면 측정 중, 서버 저장, 출석 기록은 없음');
+    b().click(); await wait(1000);
+    ok(st().contains('pause') && b().textContent.includes('재개'), '일시정지');
+    b().click(); await wait(1000);
+    ok(st().contains('run') && tr().data.segs.length === 2, '재개하면 구간 2개');
+    q('[data-tab="journal"]').click(); await wait(100);
+    ok(q('#jn-timer [data-act="st-toggle"]').textContent.includes('일시정지'), '학습일지에서도 같은 버튼');
+    // 처음 화면의 공부 시작 버튼
+    b().click(); await wait(1500);
+    T.progress = T.progress.filter(r => !(r.user_id === 'u-1' && r.pid === P)); await newDevice();
+    { const el = q('#homeToday .ht-start'); ok(el && el.textContent.includes('공부 시작'), '처음 화면에 공부 시작 버튼');
+      await wait(1100); ok(q('#homeToday .ht-start') === el, '1초마다 버튼을 새로 만들지 않음'); el.click(); await wait(1500);
+      ok(st().contains('run') && tr() && tr().data.segs.length === 1 && q('#homeToday').textContent.includes('측정 중'), '처음 화면 버튼으로 시작'); }
+    // 다른 기기에서 먼저 시작한 줄 모르고 '시작'을 눌러도 멈추지 않음
+    b().click(); await wait(1500);
+    T.progress = T.progress.filter(r => !(r.user_id === 'u-1' && r.pid === P)); await newDevice();
+    ok(q('#stimer').classList.contains('idle'), '기록이 없으면 시작 전');
+    const now = Date.now(); T.progress.push({ user_id: 'u-1', pid: P, data: { segs: [{ s: now - 60000, e: null }], hb: now, dev: 'other', u: now } });
+    b().click(); await wait(1000);
+    ok(st().contains('run') && tr().data.segs.length === 1 && tr().data.dev === 'other', '다른 기기가 이미 측정 중이면 그대로 측정 중');
+    // 일시정지를 눌렀는데 다른 기기에서 이미 멈췄으면 다시 시작하지 않음
+    const r = tr(); r.data = Object.assign({}, r.data, { segs: [{ s: now - 60000, e: now }], u: Date.now() + 1000 });
+    b().click(); await wait(1000);
+    ok(st().contains('pause') && tr().data.segs.length === 1, '다른 기기가 이미 일시정지했으면 그대로 일시정지');
+    T.progress = T.progress.filter(x => !(x.user_id === 'u-1' && x.pid === P)); }
+  // 12. 문제 타이머: 앱을 다시 열어도 이어지고, 다 되면 입력해 둔 답으로 자동 채점
+  { q('[data-tab="aiw"]').click(); await wait(300);
+    const P = 'ai-cb-breakeven', k = 'aw-' + P, cd = () => q('#cd-' + k);
+    if (!cd()) throw new Error('카드 없음 ' + P);
+    cd().querySelector('.card-head').click(); await wait(30);
+    const T0 = Date.now(); W.FM_TEST_NOW = T0; cd().querySelector('[data-act="qt-start"]').click(); await wait(20);
+    const in1 = cd().querySelector('input.my1'); in1.value = '42'; in1.dispatchEvent(new W.Event('input', { bubbles: true })); await wait(1500);
+    const n0 = (row(P) || { data: {} }).data.n || 0;
+    await newDevice(); W.FM_TEST_NOW = T0 + 60000; W.FM_TICK(); q('[data-tab="aiw"]').click(); await wait(300);
+    ok(cd() && cd().querySelector('.qt-clock') && cd().querySelector('input.my1').value === '42', '앱을 다시 열어도 타이머와 입력한 답이 이어짐');
+    W.FM_TEST_NOW = T0 + 21 * 60000; W.FM_TICK(); await wait(1500);
+    ok(row(P).data.n === n0 + 1 && row(P).data.la.a[in1.dataset.qi] === '42' && cd().querySelector('.qt-bar').textContent.includes('자동 채점'), '시간이 다 되면 자동 채점·서버 기록');
+    ok(row(P).data.la.r[in1.dataset.qi] === true || (row(P).data.hist.slice(-1)[0].a || []).includes('tover'), '시간 종료로 채점된 오답에 시간 종료 자동 표시');
+    W.FM_TEST_NOW = undefined;
+    // 13. 오답 이유가 다른 기기·오래된 기기 저장에도 남고, 다른 기기 카드에도 같은 이유가 보이는지
+    const h = row(P).data.hist.slice(-1)[0];
+    if (h.sc < h.mx) {
+      cd().querySelector('#wt-' + k + ' [data-r="calc"]').click(); await wait(1500);
+      ok((row(P).data.hist.find(x => x.i === h.i).w || []).includes('calc'), '오답 이유 서버 저장');
+      { const rp = row(P); rp.data = Object.assign({}, rp.data, { u: Date.now() + 5000, hist: rp.data.hist.map(x => x.i === h.i ? { d: x.d, sc: x.sc, mx: x.mx, i: x.i, t: x.t } : x) }); }
+      await resume();
+      ok((row(P).data.hist.find(x => x.i === h.i).w || []).includes('calc'), '이유를 모르는 기기가 나중에 저장해도 오답 이유가 남음');
+      await newDevice(); q('[data-tab="aiw"]').click(); await wait(300);
+      const b = cd() && cd().querySelector('#wt-' + k + ' [data-r="calc"]');
+      ok(b && b.getAttribute('aria-pressed') === 'true', '다른 기기에서 그 문제를 열어도 고른 이유가 그대로');
+      q('[data-tab="plan"]').click(); await wait(300);
+      ok(q('#pat-box').textContent.includes('계산 실수'), '다른 기기 오답 패턴에도 반영');
+    } else log.push('INFO 시간 종료 문제가 정답이라 오답 이유 동기화는 건너뜀'); }
+} catch (e) { log.push('ERROR ' + e.message + ' ' + e.stack); }
+log.push('DONE'); document.getElementById('out').textContent = log.join('\n'); })();
+</script>

@@ -1,0 +1,540 @@
+<!doctype html>
+<meta charset="utf-8">
+<script>if(!/^(127\.0\.0\.1|localhost)$/.test(location.hostname)){document.documentElement.innerHTML='<p style="font:16px sans-serif;padding:20px">테스트 페이지는 개발 PC(localhost)에서만 실행됩니다.</p>';throw new Error('test page blocked');}</script>
+
+<title>Supabase 연동 점검</title>
+<pre id="out">running</pre>
+<div id="host"></div>
+<script>
+// 가짜 Supabase로 로그인 → 서버 저장 → 배정 반영 → 서버 기록 병합 → 관리자 화면 → 배정/해제 → 권한 차단을 확인
+try { localStorage.removeItem('swm-subj'); } catch (e) { }   // 과목 선택 초기화 (2차 재무관리부터 점검)
+const log = [], ok = (c, m) => { log.push((c ? 'PASS ' : 'FAIL ') + m); document.getElementById('out').textContent = log.join('\n') + '\n…'; };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+window.FAKE_DB = {
+  seq: 100, session: null, calls: [],
+  users: [{ id: 'u-admin', email: 'admin@t.kr', pw: 'pw1' }, { id: 'u-1', email: 'kim@t.kr', pw: 'pw2' }, { id: 'u-2', email: 'lee@t.kr', pw: 'pw3' }],
+  tables: {
+    profiles: [{ id: 'u-admin', name: '관리자', role: 'admin', created_at: '1' }, { id: 'u-1', name: '김', role: 'member', created_at: '2' }, { id: 'u-2', name: '이', role: 'member', created_at: '3' }],
+    progress: [
+      // 다른 기기에서 먼저 푼 기록 (서버에만 있음) → 로그인하면 내려와야 함
+      { user_id: 'u-1', pid: 'dv-binomial', data: { n: 2, box: 2, due: '2099-01-01', ok: 1, last: '2026-01-01', hist: [{ d: '2026-01-01', sc: 6, mx: 6 }], u: 5 } },
+      { user_id: 'u-2', pid: 'cb-mirr', data: { n: 1, box: 1, due: '2000-01-01', ok: 0, last: '2026-01-01', hist: [{ d: '2026-01-01', sc: 2, mx: 5 }], u: 5 } },
+      { user_id: 'u-2', pid: 'dv-binomial', data: { n: '<i id=xss3>', box: 1, due: '"><img id=xss4 src=x>', ok: 0, last: '<img id=xss5 src=x>', hist: [{ d: '2026-01-01', sc: 2, mx: 5 }], u: 5 } },
+      { user_id: 'u-1', pid: 'dm:fm2:2020-01-01', data: { sub: 1, score: '<img id=xssdm1 src=x>', max: '<b id=xssdm2>', pend: '<i id=xssdm3>', items: [{ pid: '<img id=xssdm4 src=x>', seed: 1 }], u: 5 } },
+      { user_id: 'u-1', pid: 'dm:fm2:9<img id=xssdm5 src=x>', data: { items: [], u: 5 } },
+      { user_id: 'u-2', pid: 'j:9<img id=xss6 src=x>', data: { items: [{ s: '09:00', e: '10:00', title: 't' }], u: 5 } },
+    ].concat([...Array(7)].map((_, i) => { const d = new Date(Date.UTC(2026, 9, 29 + i)).toISOString().slice(0, 10), s = new Date(d + 'T09:00:00+09:00').getTime(); return { user_id: 'u-admin', pid: 't:' + d, data: { segs: [{ s, e: s + 3600000 }], u: 1 } }; })),
+    mock_results: [{ id: 'evil-1', user_id: 'u-2', data: { d: '<img id=xss1 src=x>', score: '<b id=xss2>' }, created_at: '0' }],
+    assignments: [{ id: 1, user_id: 'u-1', unit: 'bd', note: '듀레이션 보강', active: true, created_at: '1' }],
+  },
+};
+async function boot() {
+  const html = (await (await fetch('../index.html')).text())
+    .replace('<head>', '<head><base href="../">')
+    .replace(/<script src="config\.js[^"]*"><\/script>/, '<script>window.FM_CONFIG={supabaseUrl:"https://fake.supabase.co",supabaseAnonKey:"x",pushKey:"BEDPUFb7Qi_gcdwbrIP16DJP93UGwLEnVb4v2GIw-tYROE8nEFD77SDLfbhBG5mP-35KdPgAI-3bKOzg6NgdeTQ"}<\/script><script src="tools/fake_sb.js"><\/script><script src="tools/fake_push.js"><\/script>');
+  const f = document.createElement('iframe'); f.style.cssText = 'width:1200px;height:900px';
+  const loaded = new Promise(r => f.addEventListener('load', r, { once: true }));
+  f.srcdoc = html;                                   // DOM에 붙이기 전에 srcdoc를 넣어 빈 문서 load와 섞이지 않게
+  document.getElementById('host').replaceChildren(f);
+  await loaded;
+  for (let i = 0; i < 50 && !(f.contentDocument && f.contentDocument.querySelector('#savebadge') && f.contentWindow.FM_PROBLEMS); i++) await wait(100);
+  await wait(400);
+  return f.contentWindow;
+}
+(async () => {
+  try {
+    let W = await boot(), D = W.document, q = s => D.querySelector(s), qa = s => [...D.querySelectorAll(s)];
+    W.localStorage.clear();
+    ok(q('#loginOv').classList.contains('on'), '세션 없으면 로그인 창');
+    // ── 로그인 화면에서 비밀번호 변경 (이:pw3) ──
+    q('[data-act="pw-mode"]').click();
+    ok(!q('#lgNew').hidden && q('#lgBtn').textContent.includes('비밀번호 변경'), '비밀번호 변경 칸 열림');
+    q('#lgEmail').value = 'lee@t.kr'; q('#lgPw').value = 'pw3'; q('#lgPw1').value = 'newpass88'; q('#lgPw2').value = 'newpass89'; q('#loginForm').requestSubmit(); await wait(100);
+    ok(q('#lgErr').textContent.includes('서로 다릅니다') && FAKE_DB.users.find(u => u.id === 'u-2').pw === 'pw3', '새 비밀번호 확인이 다르면 거부');
+    q('#lgPw').value = 'wrong'; q('#lgPw2').value = 'newpass88'; q('#loginForm').requestSubmit(); await wait(100);
+    ok(q('#lgErr').textContent.includes('현재 비밀번호가 맞지 않습니다') && FAKE_DB.users.find(u => u.id === 'u-2').pw === 'pw3', '현재 비밀번호가 틀리면 바뀌지 않음');
+    q('#lgPw').value = 'pw3'; q('#loginForm').requestSubmit(); await wait(400);
+    ok(FAKE_DB.users.find(u => u.id === 'u-2').pw === 'newpass88' && FAKE_DB.othersOut === 1 && !q('#loginOv').classList.contains('on') && q('#who').textContent.includes('이'), '비밀번호 변경 → 다른 기기 로그인 끊고 이 기기는 로그인');
+    FAKE_DB.users.find(u => u.id === 'u-2').pw = 'pw3'; FAKE_DB.session = null;
+    W = await boot(); D = W.document; q = s => D.querySelector(s); qa = s => [...D.querySelectorAll(s)];
+    W.localStorage.clear(); delete FAKE_DB.presence['u-2'];   // 이 점검의 흔적이 뒤 점검에 섞이지 않게
+    ok(q('#loginOv').classList.contains('on') && q('#lgNew').hidden, '다시 열면 일반 로그인 화면');
+    q('#lgEmail').value = 'kim@t.kr'; q('#lgPw').value = 'wrong'; q('#loginForm').requestSubmit(); await wait(100);
+    ok(q('#lgErr').textContent.includes('맞지 않습니다'), '비밀번호 오류 문구');
+    q('#lgPw').value = 'pw2'; q('#loginForm').requestSubmit(); await wait(300);
+    ok(!q('#loginOv').classList.contains('on'), '로그인 성공 → 창 닫힘');
+    ok(q('#who').textContent.includes('김') && !q('#who').textContent.includes('관리자'), '이름 표시 · 일반 사용자: ' + q('#who').textContent.trim());
+    ok(q('#adminTab').hidden, '일반 사용자에게 관리자 탭 숨김');
+    const shown = el => !!el && !el.hidden && W.getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0;   // 고정(fixed) 요소는 offsetParent가 늘 null
+    ok(shown(q('#chatFab')) && shown(q('#stimer')), '처음 화면에서도 메신저 버튼·공부 시간이 보임');
+    ok(D.documentElement.dataset.view === 'home' && !q('#homeEss').hidden && q('#homeEss').textContent.length > 3 && q('[data-tab="journal"]').closest('#p-home') && q('[data-tab="bank"]').closest('#p-menu'), '첫 화면: 오늘의 약술 + 학습일지·출석 인증, 학습 메뉴는 옆 페이지');
+    q('[data-act="pg"][data-pg="1"]').click(); await wait(50);
+    ok(D.documentElement.dataset.view === 'menu' && shown(q('#chatFab')) && shown(q('#stimer')), '화살표 → 학습 메뉴 (메신저 버튼·공부 시간 보임)');
+    q('[data-tab="bank"]').click(); await wait(100);
+    ok(D.documentElement.dataset.view === 'tab' && q('#p-bank').classList.contains('on') && q('#backLbl').textContent === '학습 메뉴', '학습 메뉴 → 문제은행');
+    ok(q('#bank-assign').textContent.includes('채권'), '배정 단원 안내 표시');
+    const first = q('#bank-list .card .tag.unit');
+    ok(first && first.textContent === '채권', '배정 단원(채권)이 문제은행 맨 앞: ' + (first && first.textContent));
+    const ls = JSON.parse(W.localStorage.getItem('cpa-fm-v1:u-1'));
+    ok(ls.progress['dv-binomial'] && ls.progress['dv-binomial'].n === 2, '서버 기록이 내려와 병합됨');
+    ok(!ls.progress['cb-mirr'], '다른 사용자 기록은 안 내려옴');
+    // 문제 하나 풀기 → 서버 저장
+    const card = q('#bank-list .card'); const key = card.id.slice(3);
+    card.querySelectorAll('input.my1').forEach(el => { el.value = '1'; el.dispatchEvent(new W.Event('input', { bubbles: true })); });
+    card.querySelectorAll('.opt[data-j="0"]').forEach(b => b.click());
+    card.querySelector('[data-act="grade"]').click();
+    card.querySelectorAll('[data-act="self"][data-v="0"]').forEach(b => b.click());
+    await wait(1200);
+    const row = FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === key.slice(2));
+    ok(row && row.data.n === 1, '푼 기록이 서버에 저장됨');
+    ok(q('#savebadge').textContent.includes('서버에 저장됨'), '저장 배지: ' + q('#savebadge').textContent);
+    // 시험일 설정 → _settings 저장
+    q('#examDate').value = '2027-06-26'; q('#examDate').dispatchEvent(new W.Event('change')); await wait(1000);
+    ok(FAKE_DB.tables.progress.some(r => r.user_id === 'u-1' && r.pid === '_settings' && r.data.exam === '2027-06-26'), '시험일 설정이 서버에 저장');
+    // 학습일지·약술 암기 → 서버 저장
+    q('[data-tab="journal"]').click(); await wait(50);
+    q('[data-act="jn-new"]').click(); await wait(20);
+    const jf = q('#jn-form'); jf.elements.title.value = 'CAPM 복습'; jf.requestSubmit(); await wait(1000);
+    ok(FAKE_DB.tables.progress.some(r => r.user_id === 'u-1' && r.pid.startsWith('j:') && r.data.items[0].title === 'CAPM 복습'), '학습일지가 서버에 저장');
+    q('[data-tab="memo"]').click(); await wait(50);
+    q('#memo-list [data-act="memo-set"][data-v="know"]').click(); await wait(1000);
+    ok(FAKE_DB.tables.progress.some(r => r.user_id === 'u-1' && r.pid === '_memo' && Object.values(r.data.c).some(x => x.s === 'know')), '약술 암기 상태가 서버에 저장');
+    // 모의고사 제출 → mock_results 저장
+    q('[data-tab="mock"]').click(); W.confirm = () => true; q('[data-act="mock-start"]').click(); await wait(50); q('[data-act="mock-submit"]').click(); await wait(200);
+    ok(FAKE_DB.tables.mock_results.filter(r => r.user_id === 'u-1').length === 1, '모의고사 결과 서버 저장');
+    const essays = qa('#mock-list [data-act="self"][data-v="1"]'); essays.forEach(b => b.click()); await wait(200);
+    ok(FAKE_DB.tables.mock_results.filter(r => r.user_id === 'u-1').length === 1 && FAKE_DB.tables.mock_results.find(r => r.user_id === 'u-1').data.pending === 0, '약술 채점 후 같은 기록이 갱신(중복 없음)');
+    // 일일 모의고사: 사용자별 서버 저장, 악성 기록 안전
+    q('[data-tab="dm"]').click(); await wait(200);
+    { const dayRows = () => FAKE_DB.tables.progress.filter(r => r.user_id === 'u-1' && /^dm:fm2:\d{4}-\d{2}-\d{2}$/.test(r.pid) && r.pid !== 'dm:fm2:2020-01-01');
+      ok(qa('#dm-list .card').length === 5, '일일 모의고사 5문제 (로그인 사용자)');
+      await wait(1000);
+      ok(dayRows().length === 1 && dayRows()[0].data.items.length === 5, '오늘 출제가 내 progress 행으로 서버 저장');
+      ok(!D.querySelector('[id^="xssdm"]'), '악성 일일 기록: 목록에서 실행 안 됨');
+      const ev = q('#dm-hist [data-d="2020-01-01"]'); ok(!!ev && !qa('#dm-hist [data-d]').some(b => b.dataset.d.includes('<')), '날짜가 아닌 기록은 목록에서 제외');
+      if (ev) { ev.click(); await wait(60); ok(!D.querySelector('[id^="xssdm"]') && qa('#dm-list .card').length === 0, '악성 일일 기록을 열어도 실행 안 됨'); }
+      q('[data-act="dm-today"]').click(); await wait(60);
+      q('[data-act="dm-submit"]').click(); await wait(1200);
+      const r = dayRows()[0].data; ok(!!r.sub && r.max > 0 && r.items.every(x => Array.isArray(x.res)), '제출 결과 서버 저장');
+      ok(FAKE_DB.tables.mock_results.filter(x => x.user_id === 'u-1').length === 1, '일일 제출은 모의고사 회차에 섞이지 않음');
+    }
+    // 관리자로 다시 로그인
+    FAKE_DB.session = null;
+    W = await boot(); D = W.document; q = s => D.querySelector(s); qa = s => [...D.querySelectorAll(s)];
+    q('#lgEmail').value = 'admin@t.kr'; q('#lgPw').value = 'pw1'; q('#loginForm').requestSubmit(); await wait(300);
+    ok(!q('#adminTab').hidden, '관리자 탭 보임');
+    q('[data-tab="admin"]').click(); await wait(300);
+    const ucards = qa('#admin-body .ucard');
+    ok(ucards.length === 3, '관리자 화면 사용자 카드 ' + ucards.length);
+    { const keep = W.FM_TEST_NOW; W.FM_TEST_NOW = '2026-11-06T12:00:00+09:00';
+      q('[data-tab="journal"]').click(); await wait(100);
+      ok(qa('#jn-weekly .wk-col').length === 1 && q('#jn-weekly .wk-v').textContent === '1시간 0분' && q('#jn-weekly').textContent.includes('2주차(11/05~11/11) 진행 중 · 1/7일'), '7일이 차면 주 평균 공부 시간 막대 (1주차 하루 평균 1시간): ' + q('#jn-weekly').textContent.replace(/\s+/g, ' ').slice(0, 90));
+      q('[data-tab="att"]').click(); await wait(100);
+      ok(qa('#att-weekly .wk-col').length === 1, '출석 인증 메뉴에도 같은 그래프');
+      W.FM_TEST_NOW = keep; q('[data-tab="admin"]').click(); await wait(300); }
+    ok(![1, 2, 3, 4, 5, 6].some(i => D.getElementById('xss' + i)) && q('#admin-body').textContent.includes('<img id=xss1'), '사용자가 서버에 직접 넣은 HTML이 관리자 화면에서 실행되지 않음(글자로만 표시)');
+    const kim = ucards.find(c => c.querySelector('h3').textContent.startsWith('김'));
+    ok(kim && /1\/2\/3회독 [1-9]/.test(kim.textContent), '김의 회독 진도 표시');
+    ok(kim && kim.textContent.includes('최근 모의고사') && [...kim.querySelectorAll('.hist')].some(h => h.textContent.startsWith('최근 모의고사') && /점/.test(h.textContent)), '김의 모의고사 점수 표시');
+    ok(kim && /최근 7일 학습일지: 1건/.test(kim.textContent), '김의 학습일지 요약 표시');
+    q('#as-u-u-2').value = 'dv'; q('#as-n-u-2').value = '옵션'; q('[data-act="assign"][data-uid="u-2"]').click(); await wait(300);
+    ok(FAKE_DB.tables.assignments.some(a => a.user_id === 'u-2' && a.unit === 'dv' && a.active), '관리자 단원 배정');
+    qa('#admin-body [data-act="unassign"]')[0].click(); await wait(300);
+    ok(FAKE_DB.tables.assignments.filter(a => a.active).length === 1, '배정 해제');
+    // 일일 모의고사 현황
+    { const keep = W.FM_TEST_NOW, T = FAKE_DB.tables, L = W.SWM_PACKS.fm2.calcList, A = L[0], B = L[1], dma = () => q('#adm-dm'), cellOf = (n, i) => [...dma().querySelectorAll('tr')].find(r => r.cells[0].textContent === n).cells[i];
+      W.FM_TEST_NOW = '2026-11-06T12:00:00+09:00';
+      T.profiles.push({ id: 'u-3', name: '다른과목', role: 'member', subjects: ['net'], created_at: '9' });
+      const dmSaved = T.progress.filter(r => /^dm:fm2:2026-11-0[3-6]$/.test(r.pid)); T.progress = T.progress.filter(r => !dmSaved.includes(r));   // 실제 날짜가 고정 날짜와 겹쳐 앞에서 만든 기록과 섞이지 않게
+      T.progress.push(
+        { user_id: 'u-2', pid: 'dm:fm2:2026-11-06', data: { sub: new Date('2026-11-06T10:30:00+09:00').getTime(), score: 12.5, max: 30, pend: 1, u: 1, items: [{ pid: A.id, u: A.unit, ok: 1, mx: 3, pts: 15, res: [true, false, null], ans: { 0: '비밀답안' } }, { pid: B.id, u: B.unit, ok: 1, mx: 1, pts: 15, res: [true] }] } },
+        { user_id: 'u-2', pid: 'dm:fm2:2026-11-05', data: { u: 1, items: [{ pid: A.id, seed: 1 }, { pid: B.id, seed: 2 }], draft: { [A.id]: { 0: '12' }, [B.id]: { 0: '' } } } },
+        { user_id: 'u-2', pid: 'dm:fm2:2026-11-04', data: { u: 1, items: [{ pid: A.id, seed: 1 }] } },
+        { user_id: 'u-2', pid: 'dm:fm2:2026-11-03', data: { sub: 1, score: 27, max: 30, u: 1, items: [] } },
+        { user_id: 'u-1', pid: 'dm:fm2:2026-11-06', data: { sub: 1, score: '<img id=xssdm6 src=x>', max: 30, pend: '<i id=xssdm7>', u: 1, items: [{ pid: '<img id=xssdm8 src=x>', ok: '<b id=xssdm9>', mx: 1, pts: '<i id=xssdm10>', res: ['<i id=xssdm11>'] }] } });
+      q('[data-act="admin-refresh"]').click(); await wait(300);
+      ok(cellOf('이', 7).textContent === '12.5/30 · 대기 1' && cellOf('이', 7).querySelector('.h1'), '오늘 칸: 제출 점수·직접 채점 대기·60% 미만 색');
+      ok(cellOf('이', 6).textContent === '풀이 중 1/2', '제출 전: 답을 입력한 문제 수');
+      ok(cellOf('이', 5).textContent === '열어 봄' && cellOf('이', 4).querySelector('.h3') && cellOf('이', 1).textContent === '–', '열어 보기만 한 날 · 60% 이상 색 · 문제를 안 연 날');
+      ok(cellOf('이', 8).textContent === '2회' && cellOf('이', 9).textContent === '66%', '제출 횟수와 평균 (12.5/30, 27/30): ' + cellOf('이', 8).textContent + ' ' + cellOf('이', 9).textContent);
+      ok(![...dma().querySelectorAll('tr')].some(r => r.cells[0].textContent === '다른과목') && qa('#admin-body .ucard').length === 4, '일일 모의고사가 없는 과목만 듣는 사용자는 표에서 제외');
+      cellOf('이', 7).querySelector('button').click(); await wait(30);
+      { const d = dma().querySelector('.dma-d'), qs = [...d.querySelectorAll('.dma-q')].map(x => x.textContent);
+        ok(d.textContent.includes(A.title) && d.textContent.includes(B.title) && d.textContent.includes('5/15점') && d.textContent.includes('10:30'), '칸을 누르면 문제별 점수와 제출 시각: ' + d.querySelector('small').textContent);
+        ok(qs.join() === '물음 1 맞음,물음 2 틀림,물음 3 직접 채점 대기,물음 1 맞음', '물음별 결과: ' + qs.join());
+        ok(!dma().textContent.includes('비밀답안'), '쓴 답 내용은 표시하지 않음'); }
+      cellOf('이', 6).querySelector('button').click(); await wait(30);
+      ok(dma().querySelector('.dma-d').textContent.includes('아직 제출 안 함') && dma().querySelector('.dma-d').textContent.includes('답 입력함') && dma().querySelector('.dma-d').textContent.includes('입력 안 함'), '제출 전 회차: 입력 여부만');
+      cellOf('이', 6).querySelector('button').click(); await wait(30);
+      ok(!dma().querySelector('.dma-d'), '같은 칸을 다시 누르면 닫힘');
+      cellOf('김', 7).querySelector('button').click(); await wait(30);
+      ok(![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].some(i => D.getElementById('xssdm' + i)) && dma().querySelector('.dma-d').textContent.includes('삭제된 문제'), '일일 모의고사 기록에 넣은 HTML이 실행되지 않음');
+      const nx = () => q('[data-act="dma-nav"][data-v="7"]'), pv = () => q('[data-act="dma-nav"][data-v="-7"]');
+      ok(nx().disabled && !pv().disabled, '오늘이 끝이면 다음 7일 비활성');
+      pv().click(); await wait(30);
+      ok(dma().querySelector('th:nth-child(8)').textContent === '10/30' && !nx().disabled && !dma().querySelector('.dma-d'), '이전 7일로 이동');
+      nx().click(); await wait(30);
+      ok(dma().querySelector('th:nth-child(8)').textContent === '오늘', '다음 7일로 돌아옴');
+      T.progress = T.progress.filter(r => !(/^dm:fm2:2026-11-0[3-6]$/.test(r.pid) && r.data.u === 1));
+      T.profiles = T.profiles.filter(u => u.id !== 'u-3');
+      T.progress.push(...dmSaved);
+      W.FM_TEST_NOW = keep; }
+    // 일반 사용자는 배정 불가 (RLS)
+    FAKE_DB.session = { user: { id: 'u-2', email: 'lee@t.kr' } };
+    const r = await new Promise(res => W.supabase.createClient().from('assignments').insert({ user_id: 'u-2', unit: 'cb' }).then(res));
+    ok(r.error, '일반 사용자의 배정 시도는 차단');
+
+    // ── 1000행이 넘는 데이터: 관리자 화면이 나눠 받아 모두 반영하는지 ──
+    for (let i = 0; i < 1100; i++) FAKE_DB.tables.progress.push({ user_id: 'u-2', pid: 'aa' + String(i).padStart(5, '0'), data: { u: 1 } });
+    FAKE_DB.tables.progress.push({ user_id: 'u-2', pid: 'pf-two-asset', data: { n: 1, box: 1, due: '2099-01-01', ok: 1, last: '2026-10-01', hist: [{ d: '2026-10-01', sc: 10, mx: 10 }], u: 1 } });
+    FAKE_DB.session = { user: { id: 'u-admin', email: 'admin@t.kr' } };
+    W = await boot(); D = W.document; q = s => D.querySelector(s); qa = s => [...D.querySelectorAll(s)];
+    q('[data-tab="admin"]').click(); await wait(500);
+    const lee = qa('#admin-body .ucard').find(c => c.querySelector('h3').textContent.startsWith('이'));
+    ok(lee && /1\/2\/3회독 2\//.test(lee.textContent), '1000행이 넘어도 관리자 화면에 모든 기록 반영 (기존 1 + 1101번째 행 1 = 2회)');
+    FAKE_DB.tables.progress = FAKE_DB.tables.progress.filter(r => !r.pid.startsWith('aa'));
+
+    // ── 출석 인증 ──
+    const T_IN = '2026-10-29T08:30:00+09:00', T_OUT = '2026-10-29T15:00:00+09:00';
+    const kimLogin = async (now) => {
+      FAKE_DB.now = now; FAKE_DB.session = { user: { id: 'u-1', email: 'kim@t.kr' } };
+      W = await boot(); D = W.document; q = s => D.querySelector(s); qa = s => [...D.querySelectorAll(s)];
+      W.FM_TEST_NOW = now; W.confirm = () => true; W.alert = () => { };
+      q('[data-tab="att"]').click(); await wait(300);
+    };
+    await kimLogin(T_IN);
+    const btns = qa('#att-blocks [data-act="att-open"]');
+    ok(btns.length === 3 && !btns[0].disabled && btns[1].disabled && btns[2].disabled, '출석 가능 블록(오전)만 버튼 활성');
+    btns[0].click(); await wait(1500);
+    const vtrack = q('#camVideo').srcObject && q('#camVideo').srcObject.getVideoTracks()[0];
+    if (vtrack) ok(vtrack.readyState === 'live', '버튼 클릭 → 카메라 켜짐 (영상 트랙 live)');
+    else log.push('SKIP 카메라 실제 연결은 헤드리스 브라우저에서 확인 불가 (getUserMedia 대기) — 실제 기기에서 확인 필요');
+    // 헤드리스 가상 시간에서는 영상 프레임이 흐르지 않으므로 해상도만 흉내 냄 (실제 기기는 카메라 프레임을 그대로 캡처)
+    const stubVideo = () => { Object.defineProperty(W.HTMLVideoElement.prototype, 'videoWidth', { get: () => 640, configurable: true }); Object.defineProperty(W.HTMLVideoElement.prototype, 'videoHeight', { get: () => 480, configurable: true }); };
+    stubVideo();
+    q('[data-act="cam-shoot"]').click(); await wait(400);
+    ok(!q('#camShot').hidden && q('#camShot').src.startsWith('data:image/jpeg'), '촬영 미리보기');
+    q('[data-act="cam-save"]').click(); await wait(400);
+    const arow = FAKE_DB.tables.attendance.find(r => r.user_id === 'u-1' && r.block === 1 && r.day === '2026-10-29');
+    ok(arow && FAKE_DB.storage['attendance/u-1/2026-10-29-1.jpg'], '출석 기록 + 사진 저장 ' + (q('#camErr').textContent || ''));
+    const re = await W.supabase.createClient().storage.from('attendance').upload('u-1/2026-10-29-1.jpg', new Blob(['x']), { upsert: true });
+    ok(!re.error, '출석 시간 안에서는 사진 다시 올리기 가능 (기록 저장 실패 후 재시도 대비)');
+    ok(!q('#camOv').classList.contains('on') && q('#att-blocks').textContent.includes('출석 08:30') && qa('#att-blocks [data-act="att-open"]')[0].disabled, '출석 후 상태 표시 · 버튼 잠김');
+    // ── 공부 시간: 첫 출석(08:30)에 자동 시작 ──
+    // 앱을 계속 보고 있는 상태로 시간 경과(30초마다 tick) / away=true면 앱을 떠나 있던 것(tick 없이 점프)
+    const setNow = async (t, away) => {
+      if (!away) for (let x = new Date(W.FM_TEST_NOW).getTime() + 30000; x < new Date(t).getTime(); x += 30000) { W.FM_TEST_NOW = new Date(x).toISOString(); W.FM_TICK(); }
+      W.FM_TEST_NOW = t; W.FM_TICK(); await wait(1100);
+    };
+    ok(q('#stimer').classList.contains('run') && q('#stState').textContent === '측정 중', '첫 출석 → 우측 상단 공부 시간 측정 시작');
+    await setNow('2026-10-29T09:30:00+09:00');
+    ok(q('#stTime').textContent === '01:00:00', '1시간 뒤 01:00:00 표시: ' + q('#stTime').textContent);
+    q('#stBtn').click(); await wait(150);
+    ok(q('#stimer').classList.contains('pause') && q('#stBtn').textContent.includes('재개'), '일시정지');
+    await setNow('2026-10-29T18:00:00+09:00');
+    ok(q('#stTime').textContent === '01:00:00', '재개하지 않으면 일시정지 시각까지만 기록 (18시에도 01:00:00)');
+    q('[data-tab="journal"]').click(); await wait(100);
+    ok(q('#jn-timer').textContent.includes('01:00:00') && q('#jn-timer').textContent.includes('일시정지 중'), '학습일지에도 공부 시간 표시');
+    q('#jn-timer [data-act="st-toggle"]').click(); await wait(100); await setNow('2026-10-29T18:30:00+09:00');
+    ok(q('#stTime').textContent === '01:30:00' && q('#jn-timer').textContent.includes('2구간'), '학습일지에서 재개 → 18:30에 01:30:00, 구간 2개');
+    await wait(900);
+    const trow = FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 't:2026-10-29');
+    ok(trow && trow.data.segs.length === 2, '공부 시간 기록이 서버에 저장');
+    // 출석을 한 번 더 해도 측정 기록은 새로 시작하지 않음
+    ok(!W.document.querySelector('#stimer').classList.contains('idle'), '측정 상태 유지');
+    // ── 접속 현황: 김은 보이고, 관리자는 목록에 없음 ──
+    q('[data-tab="att"]').click(); await wait(100);
+    ok(FAKE_DB.presence['u-1'] && FAKE_DB.presence['u-1'][0].st === 'study', '접속 현황에 김(공부 중) 등록');
+    { await W.FM_TICK && W.FM_TICK(); await wait(300); const rows = qa('#stAdm .sa-r'), ad = rows.find(r => r.textContent.includes('관리자'));
+      ok(q('#stAdm') && !q('#stAdm').hidden && ad && ad.querySelector('b').textContent === '01:00:00' && rows.some(r => r.textContent.includes('이')) && !rows.some(r => r.textContent.includes('김')), '일반 사용자도 공부 시간 현황: 관리자(01:00:00)·다른 사용자, 나는 위 타이머로');
+      const sr = q('#stimer').getBoundingClientRect(), br = q('#stAdm').getBoundingClientRect(); ok(sr.bottom <= br.top + 1, '현황 목록은 내 공부 시간 밑'); }
+    { const rt = W.FM_FAKE_RT, b0 = rt ? rt.beats : -1;   // 테스트 iframe(srcdoc)에서는 실제 워커를 못 만들어 fake_sb.js의 가짜 Worker로 신호를 흉내 (실제 워커는 tools/ka_check.html·ka_cdp.py로 실제 시간 확인)
+      if (rt && rt._swmKA) { rt._swmKA.onmessage({ data: 'beat' }); rt._swmKA.onmessage({ data: 'beat' }); }
+      rt.stateChangeCallbacks.open.forEach(f => { rt.heartbeatTimer = 123; f(); });   // 재연결 시 라이브러리가 새 타이머를 만들어도 걷어 내는지
+      ok(rt && rt._swmKA instanceof W.Worker && rt.heartbeatTimer === null && rt.beats === b0 + 2, '다른 창을 봐도 접속 유지: 라이브러리 하트비트 타이머를 걷어 내고(재연결 포함) 웹 워커 신호마다 하트비트 전송');
+      rt.pendingHeartbeatRef = 'x'; const b1 = rt.beats; rt._swmKA.onmessage({}); const skip = rt.beats === b1; rt._swmKA.onmessage({}); rt.pendingHeartbeatRef = null;
+      ok(skip && rt.beats === b1 + 1, '보낸 하트비트 응답 대기 중이면 한 번은 기다리고, 두 번째에는 보냄(끊긴 연결은 라이브러리가 재연결)');
+      rt._swmBeat = Date.now() - 70000; rt.stateChangeCallbacks.open.forEach(f => { rt.heartbeatTimer = 456; f(); });
+      ok(rt.heartbeatTimer === 456, '워커가 1분 넘게 조용하면 라이브러리 하트비트 타이머를 걷어 내지 않음(원래 방식 유지)');
+      rt._swmKA.onmessage({}); ok(rt.heartbeatTimer === null, '워커 신호가 다시 오면 그때 걷어 냄'); }
+    { // 이(u-2)는 앱을 닫았지만 오늘 공부 시간이 측정 중 → 접속 현황에 '공부 중 · 앱 밖'
+      const now = new Date(W.FM_TEST_NOW).getTime(), day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul' }).format(new Date(now));
+      FAKE_DB.tables.progress.push({ user_id: 'u-2', pid: 't:' + day, data: { segs: [{ s: now - 3600e3, e: null }], hb: now - 1800e3, u: 1 } });
+      delete FAKE_DB.presence['u-2']; FAKE_DB.presSync();
+      q('[data-act="tb-menu"]').click(); await wait(100);
+      const away = qa('#tbPres .tbp').find(r => r.textContent.includes('이') && r.textContent.includes('앱 밖'));
+      ok(away && away.textContent.includes('공부 중'), '앱을 나가 있어도 공부 시간이 측정 중이면 접속 현황에 "공부 중 · 앱 밖"');
+      FAKE_DB.tables.progress.find(r => r.user_id === 'u-2' && r.pid === 't:' + day).data.hb = now - 4 * 3600e3;
+      q('[data-act="tb-menu"]').click(); q('[data-act="tb-menu"]').click(); await wait(100);
+      ok(!qa('#tbPres .tbp').some(r => r.textContent.includes('앱 밖')), '3시간 넘게 앱을 열지 않아 자동 일시정지 규칙에 걸리면 목록에서 빠짐');
+      FAKE_DB.presence['u-2'] = [{ name: '이', st: 'pause', at: 1 }]; FAKE_DB.presSync(); await wait(30);
+      ok(!qa('#tbPres .tbp').some(r => r.textContent.includes('이') && !r.textContent.includes('(나)')), '일시정지 중인 사람은 앱을 켜 두어도 접속 현황에 표시하지 않음');
+      FAKE_DB.presence['u-2'] = [{ name: '이', st: 'online', at: 1 }]; FAKE_DB.presSync(); await wait(30);
+      ok(qa('#tbPres .tbp').some(r => r.textContent.includes('이') && r.textContent.includes('접속')), '출석 전이라도 앱을 켜 두면 접속으로 표시');
+      delete FAKE_DB.presence['u-2']; FAKE_DB.presSync(); await wait(30);
+      ok(!qa('#tbPres .tbp').some(r => r.textContent.includes('이') && !r.textContent.includes('(나)')), '출석 전에 앱을 끄면 목록에서 빠짐');
+      q('[data-act="tb-menu"]').click(); await wait(30); }
+    FAKE_DB.presence['u-3'] = [{ name: '<img id=xss7 src=x>', st: '"><img id=xss8 src=x>', at: 1 }]; FAKE_DB.presSync(); await wait(50);
+    ok(!D.getElementById('xss7') && !D.getElementById('xss8'), '접속 현황에 악성 값을 보내도 실행되지 않음');
+    delete FAKE_DB.presence['u-3'];
+    FAKE_DB.presence['u-2'] = [{ name: '이', st: 'online', at: 1 }]; FAKE_DB.presSync(); await wait(50);
+    ok(q('#tbN').textContent === '1' && q('#tbPres').textContent.includes('김 (나)') && q('#tbPres').textContent.includes('이') && q('#tbPres').textContent.includes('접속') && q('#tbPres').textContent.includes('2명'), '⋯ 메뉴: 나와 다른 접속자·상태, ⋯ 버튼에 다른 접속자 수 1');
+    ok(q('#presence').textContent.includes('이') && q('#presence').textContent.includes('김 (나)') && q('#presence').textContent.includes('2명'), '다른 사용자 접속 표시: ' + q('#presence').textContent.replace(/\s+/g, ' ').slice(0, 60));
+    // ── 메신저: 김 → 전체 대화방·1:1, 이가 보낸 1:1 메시지가 실시간으로 도착 ──
+    ok(!q('#chatFab').hidden && getComputedStyle(q('#chatFab')).position === 'fixed', '메신저 버튼이 화면에 고정(스크롤해도 따라다님)');
+    q('#chatFab').click(); await wait(50);
+    ok(!q('#chatPanel').hidden && qa('#chatBody .chat-room').length === 3 && q('#chatBody').textContent.includes('전체 대화방') && q('#chatBody').textContent.includes('이') && q('#chatBody').textContent.includes('관리자'), '대화 목록: 전체 대화방 + 다른 사용자 2명');
+    q('[data-act="chat-room"][data-room="all"]').click(); await wait(20);
+    q('#chatIn').value = '<img id=xss9 src=x> 오늘 채권 같이 풀어요'; q('#chatForm').requestSubmit(); await wait(50);
+    const m1 = FAKE_DB.tables.messages.find(m => m.room === 'all');
+    ok(m1 && m1.sender === 'u-1' && qa('#chatBody .chat-msg.me').length === 1 && !D.getElementById('xss9') && q('#chatBody').textContent.includes('<img id=xss9'), '전체 대화방에 보내기 (HTML은 글자로만)');
+    q('#chatBack').click(); await wait(20);
+    const dmRoom = 'dm:' + ['u-1', 'u-2'].sort().join(':');
+    q(`[data-act="chat-room"][data-room="${dmRoom}"]`).click(); await wait(20);
+    q('#chatIn').value = '안녕'; q('#chatForm').requestSubmit(); await wait(50);
+    ok(D.activeElement === q('#chatIn'), '메시지를 보낸 뒤에도 입력창에 포커스 유지(휴대폰 키패드가 닫히지 않음)');
+    { const ev = new W.MouseEvent('mousedown', { bubbles: true, cancelable: true }); q('#chatForm button').dispatchEvent(ev); ok(ev.defaultPrevented, '보내기 버튼을 눌러도 입력창 포커스를 빼앗지 않음'); }
+    ok(FAKE_DB.tables.messages.some(m => m.room === dmRoom && m.sender === 'u-1' && m.body === '안녕'), '1:1 대화 보내기');
+    q('#chatBack').click(); await wait(20);
+    const adRoom = 'dm:' + ['u-1', 'u-admin'].sort().join(':');
+    q(`[data-act="chat-room"][data-room="${adRoom}"]`).click(); await wait(20);
+    q('#chatIn').value = '관리자님 질문 있어요'; q('#chatForm').requestSubmit(); await wait(50);
+    ok(FAKE_DB.tables.messages.some(m => m.room === adRoom && m.sender === 'u-1') && !q('#chatErr').textContent, '일반 사용자 → 관리자 1:1 보내기');
+    q('#chatBack').click(); await wait(20);
+    q(`[data-act="chat-room"][data-room="${dmRoom}"]`).click(); await wait(20);
+    q('#chatBack').click(); q('[data-act="chat-close"]').click(); await wait(20);
+    // 이가 김에게 보낸 메시지 (서버 트리거가 김의 채널로 전달)
+    { const r = { id: ++FAKE_DB.seq, room: dmRoom, sender: 'u-2', body: '네 좋아요', created_at: new Date().toISOString() }; FAKE_DB.tables.messages.push(r); FAKE_DB.chatSend(r); }
+    await wait(50);
+    ok(q('#chatN').textContent === '1', '창을 닫아 둔 동안 온 메시지 → 버튼에 안 읽음 1: ' + q('#chatN').textContent);
+    q('#chatFab').click(); await wait(20);
+    ok(q(`[data-room="${dmRoom}"] em`) && q(`[data-room="${dmRoom}"] em`).textContent === '1' && q(`[data-room="${dmRoom}"]`).textContent.includes('네 좋아요'), '대화 목록에 안 읽음·마지막 메시지');
+    q(`[data-act="chat-room"][data-room="${dmRoom}"]`).click(); await wait(20);
+    ok(q('#chatN').textContent === '' && qa('#chatBody .chat-msg:not(.me)').length === 1, '대화방을 열면 읽음 처리');
+    // ── 다른 기기(PC)에서 답장하면 이 기기(휴대폰) 배지도 실시간으로 꺼짐 ──
+    { const send = async (room, sender, body) => { const r = { id: ++FAKE_DB.seq, room, sender, body, created_at: new Date().toISOString() }; FAKE_DB.tables.messages.push(r); FAKE_DB.chatSend(r); await wait(40); return r; };
+      q('#chatBack').click(); q('[data-act="chat-close"]').click(); await wait(20);
+      await send(dmRoom, 'u-2', '답장 주세요'); await send(dmRoom, 'u-2', '확인하셨나요');
+      ok(q('#chatN').textContent === '2', '답장 전: 안 읽음 2');
+      await send('all', 'u-2', '전체방 공지');
+      ok(q('#chatN').textContent === '3', '다른 대화방 메시지 포함 안 읽음 3');
+      await send(dmRoom, 'u-1', '다른 기기에서 보낸 답장');
+      ok(q('#chatN').textContent === '1' && q('#chatPanel').hidden, '다른 기기에서 답장 → 창을 열지 않아도 그 대화방 안 읽음만 꺼짐 (전체방 1 남음)');
+      await send('all', 'u-1', '전체방에도 답장');
+      ok(q('#chatN').textContent === '', '전체방도 답장 → 배지 꺼짐');
+      await send(dmRoom, 'u-2', '답장 뒤에 온 메시지');
+      ok(q('#chatN').textContent === '1', '답장 뒤에 온 새 메시지는 다시 안 읽음');
+      const saved = JSON.parse(W.localStorage.getItem('cpa-fm-chatread:u-1') || '{}');
+      ok(saved[dmRoom] > 0 && saved.all > 0, '읽음 위치가 이 기기에 저장되어 새로고침 후에도 유지');
+      // ── 다른 기기(PC)에서 읽기만 해도 이 기기 배지가 꺼짐 ──
+      const fnv = s => { let h = 0x811c9dc5; for (const ch of s) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193); } return h >>> 0; }, crK = r => fnv('u-1|' + r).toString(36);
+      const crRow = () => FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 'chatread');
+      await wait(900);
+      ok(!!crRow() && crRow().data.r[crK(dmRoom)] > 0 && !JSON.stringify(crRow().data).includes('dm:') && !JSON.stringify(crRow().data).includes('u-2'), '읽음 위치 서버 저장, 대화방 이름은 해시로만 저장');
+      ok(q('#chatN').textContent === '1', '(읽기 공유 전) 안 읽음 1');
+      const lastDm = Math.max(...FAKE_DB.tables.messages.filter(m => m.room === dmRoom).map(m => m.id));
+      crRow().data.r[crK(dmRoom)] = lastDm;   // 다른 기기가 대화방을 열어 읽음 위치를 저장한 상황
+      await wait(5200);
+      ok(q('#chatN').textContent === '' && q('#chatPanel').hidden, '다른 기기에서 읽기만 해도 5초 안에 배지 꺼짐');
+      ok(JSON.parse(W.localStorage.getItem('cpa-fm-chatread:u-1'))[dmRoom] === lastDm, '받아 온 읽음 위치가 이 기기에도 저장');
+      await send(dmRoom, 'u-2', '읽은 뒤 온 메시지'); ok(q('#chatN').textContent === '1', '읽은 뒤 온 새 메시지는 안 읽음');
+      crRow().data.r[crK(dmRoom)] = FAKE_DB.seq; D.dispatchEvent(new W.Event('visibilitychange')); await wait(50);
+      ok(q('#chatN').textContent === '', '앱으로 돌아오면 바로 반영');
+      crRow().data.r[crK(dmRoom)] = 1; await wait(5200); const lo = JSON.parse(W.localStorage.getItem('cpa-fm-chatread:u-1'))[dmRoom];
+      ok(lo === FAKE_DB.seq, '서버 값이 더 작아도 이 기기 읽음 위치는 줄지 않음');
+      crRow().data.r[crK(dmRoom)] = FAKE_DB.seq;
+      q('#chatFab').click(); await wait(20); q(`[data-act="chat-room"][data-room="${dmRoom}"]`).click(); await wait(20); }
+    // ── 메신저 알림: 켜기 → 서버에 이 계정으로 구독 등록, 알림을 누르면 그 대화방으로, 끄기 → 해제 ──
+    q('#chatBack').click(); await wait(20);
+    ok(q('#chatBody .chat-push') && q('#chatBody .chat-push').textContent.includes('알림 켜기'), '대화 목록 맨 위에 알림 켜기');
+    q('[data-act="push-on"]').click(); await wait(60);
+    const sub1 = (FAKE_DB.tables.push_subs || []).find(s => s.user_id === 'u-1');
+    ok(sub1 && sub1.endpoint === PUSH.endpoint && sub1.p256dh === 'P1' && PUSH.key && PUSH.key.length === 65 && q('#chatBody .chat-push').textContent.includes('끄기'), '알림 켜기 → 권한 허용·구독(공개키 65바이트)·서버 등록');
+    PUSH.swMsg({ type: 'open-chat', room: dmRoom }); await wait(30);
+    ok(q('#chatTitle').textContent === '이' && !q('#chatForm').hidden, '알림을 누르면 그 1:1 대화방이 열림');
+    PUSH.swMsg({ type: 'open-chat', room: 'dm:u-2:u-admin' }); await wait(30);
+    ok(q('#chatTitle').textContent === '메신저', '남의 1:1 대화방 주소로는 열리지 않고 목록으로');
+    q('[data-act="push-off"]').click(); await wait(60);
+    ok(!(FAKE_DB.tables.push_subs || []).some(s => s.user_id === 'u-1') && !PUSH.sub && q('#chatBody .chat-push').textContent.includes('알림 켜기'), '끄기 → 구독 해제·서버에서 삭제');
+    q('[data-act="push-on"]').click(); await wait(60);   // 다시 켜 둔 채로 다음 사용자 확인
+    q('#chatBack').click(); q('[data-act="chat-close"]').click(); await wait(20);
+    // 정책: 남의 1:1 대화방에는 쓸 수 없음
+    { const bad = await W.supabase.createClient().from('messages').insert({ room: 'dm:u-2:u-admin', body: 'x' }).select().single(); ok(!!bad.error, '남의 1:1 대화방에는 보낼 수 없음'); }
+    q('[data-act="chat-close"]').click();
+    // ── 앱을 나가도 계속 측정 (일시정지를 누를 때만 멈춤) ──
+    await setNow('2026-10-29T18:31:30+09:00', true);
+    ok(q('#stimer').classList.contains('run') && q('#stTime').textContent === '01:31:30', '1분 30초 떠났다 돌아와도 측정 유지: ' + q('#stTime').textContent);
+    await setNow('2026-10-29T18:45:00+09:00', true);
+    ok(q('#stimer').classList.contains('run') && q('#stTime').textContent === '01:45:00' && !q('#stState').textContent.includes('자동'), '13분 앱을 나가 있다 와도 그 시간까지 계속 측정: ' + q('#stState').textContent + ' ' + q('#stTime').textContent);
+    q('#stBtn').click(); await wait(900);
+    ok(q('#stimer').classList.contains('pause') && FAKE_DB.presence['u-1'][0].st === 'pause', '일시정지를 누르면 멈추고 접속 현황에도 일시정지');
+    q('#stBtn').click(); await wait(100); await setNow('2026-10-29T18:50:00+09:00');
+    ok(q('#stimer').classList.contains('run') && q('#stTime').textContent === '01:50:00' && !q('#stState').textContent.includes('자동'), '재개하면 다시 측정: ' + q('#stTime').textContent);
+    // 다른 기기에서 18:50에 일시정지한 기록이 서버에 있으면, 1분마다 확인할 때 따라감 (오래된 '측정 중'으로 덮어쓰지 않음)
+    { const row = FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 't:2026-10-29'), x = JSON.parse(JSON.stringify(row.data));
+      x.segs[x.segs.length - 1].e = new Date('2026-10-29T18:50:00+09:00').getTime(); x.u = Date.now() + 60000; row.data = x; }
+    await setNow('2026-10-29T18:51:10+09:00'); await wait(900);
+    const srow = FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 't:2026-10-29');
+    ok(q('#stimer').classList.contains('pause') && q('#stTime').textContent === '01:50:00' && srow.data.segs[srow.data.segs.length - 1].e != null, '다른 기기에서 일시정지하면 이 기기도 따라가고 서버 기록을 덮어쓰지 않음: ' + q('#stTime').textContent);
+    q('#stBtn').click(); await wait(300);
+    ok(q('#stimer').classList.contains('run'), '그 뒤 이 기기에서 재개');
+    Object.defineProperty(D, 'visibilityState', { value: 'hidden', configurable: true });   // 앱이 백그라운드에 있는 동안
+    W.FM_TEST_NOW = '2026-10-29T19:30:00+09:00'; await wait(1100);
+    ok(q('#stTime').textContent === '02:28:50', '앱이 백그라운드에 있어도 계속 측정 (18:51:10 재개 → 19:30에 02:28:50): ' + q('#stTime').textContent);
+    delete D.visibilityState;
+    // 다른 기기(휴대폰)가 19:40에 측정을 시작한 기록 → 이 기기(PC)는 받아서 보여 주기만 하고, 시간을 이어 가지 않음
+    { const T = h => new Date('2026-10-29T' + h + '+09:00').getTime(), row = FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 't:2026-10-29'), x = JSON.parse(JSON.stringify(row.data));
+      x.segs[x.segs.length - 1].e = x.segs[x.segs.length - 1].e || T('19:00:00'); x.segs.push({ s: T('19:40:00'), e: null }); x.hb = T('19:40:00'); x.dev = 'phone-x'; x.u = Date.now() + 120000; row.data = x;
+      W.FM_TEST_NOW = '2026-10-29T19:40:30+09:00'; W.FM_TICK(); await wait(300);
+      const sec = s => s.split(':').reduce((a, b) => a * 60 + +b, 0), t0 = sec(q('#stTime').textContent);
+      ok(q('#stimer').classList.contains('run'), 'PC: 휴대폰에서 시작한 측정을 받아 "측정 중"으로 표시');
+      await setNow('2026-10-29T19:45:00+09:00'); await wait(300);
+      ok(q('#stimer').classList.contains('run') && sec(q('#stTime').textContent) - t0 === 270, '휴대폰을 잠가 둬도 휴대폰 측정은 계속(PC 화면에도 측정 중): ' + q('#stState').textContent + ' ' + q('#stTime').textContent);
+      const r2 = FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 't:2026-10-29').data;
+      ok(r2.dev === 'phone-x' && r2.hb === T('19:40:00'), 'PC는 서버의 측정 기록을 이어 가지 않음');
+      // 휴대폰을 3시간 넘게 열지 않으면 마지막 확인(19:40) + 3시간 = 22:40에 자동 일시정지
+      const before = sec(q('#stTime').textContent);
+      W.FM_TEST_NOW = '2026-10-29T23:10:00+09:00'; W.FM_TICK(); await wait(300);
+      ok(!q('#stimer').classList.contains('run') && q('#stState').textContent.includes('자동 일시정지 (22:40)') && sec(q('#stTime').textContent) - before === (3 * 3600 - 300), '3시간 넘게 열지 않으면 마지막 확인 + 3시간(22:40)에서 자동 일시정지: ' + q('#stState').textContent + ' ' + q('#stTime').textContent);
+      q('#stBtn').click(); await wait(1000);
+      const r3 = FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 't:2026-10-29').data;
+      ok(q('#stimer').classList.contains('run') && r3.segs[r3.segs.length - 2].e === T('22:40:00') && r3.dev !== 'phone-x', 'PC에서 재개 → 멈춘 구간은 22:40에 닫고 PC가 측정 기기가 됨'); }
+    { // 일시정지 잊음 알림을 눌러 앱이 열리면: 계속 공부 중 / 지금 일시정지 / 마지막 확인 시각에 멈춘 걸로
+      const row = () => FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 't:2026-10-29').data;
+      W.FM_STASK('ask'); await wait(400);
+      const box = q('#stAsk'), hb = row().hb;
+      ok(box && !box.hidden && box.querySelectorAll('button').length === 3 && box.textContent.includes('지금도 공부 중'), '알림 → 확인 창(계속·지금 일시정지·마지막 확인 시각에 멈춤)');
+      W.FM_TEST_NOW = '2026-10-29T23:12:00+09:00'; W.FM_STASK('keep'); await wait(1000);
+      ok(row().hb === new Date('2026-10-29T23:12:00+09:00').getTime() && row().hb > hb && q('#stimer').classList.contains('run') && q('#stAsk').textContent.includes('계속 측정'), '"계속 공부 중"이면 측정 유지(마지막 확인 시각을 지금으로)');
+      W.FM_STASK('ask'); await wait(400); const hb2 = row().hb;
+      q('#stAsk [data-act="st-back"]').click(); await wait(1000);
+      const g = row().segs[row().segs.length - 1];
+      ok(g.e === hb2 && !q('#stimer').classList.contains('run') && q('#stAsk').hidden, '"마지막 확인 시각에 멈춘 걸로" → 그 시각에서 일시정지(앱 밖 시간 제외)');
+      W.FM_STASK('ask'); await wait(400); ok(!q('#stAsk').hidden && q('#stAsk').textContent.includes('이미 멈춰'), '이미 멈춰 있으면 묻지 않고 안내');
+      q('[data-tab="journal"]').click(); await wait(100); ok(q('#jn-timer .push-hint'), '공부 시간 화면에 알림 켜기 안내'); }
+    W.FM_TEST_NOW = '2026-10-29T08:30:00+09:00';
+    // 블록 밖 시간
+    await kimLogin(T_OUT);
+    ok(qa('#att-blocks [data-act="att-open"]').every(b => b.disabled), '블록 밖에서는 모든 버튼 비활성');
+    W.FM_TEST_NOW = '2026-10-29T18:10:00+09:00'; q('[data-tab="bank"]').click(); q('[data-tab="att"]').click(); await wait(100);
+    ok(!qa('#att-blocks [data-act="att-open"]')[2].disabled && q('#att-blocks').textContent.includes('18:00 – 20:00'), '저녁 출석은 18시부터 가능');
+    W.FM_TEST_NOW = T_OUT;
+    ok(q('#att-hist').textContent.includes('✔ 08:30'), '내 출석 기록에 표시');
+    // 기기 시계 조작: 화면 시각은 블록 안(12:30)이지만 서버 시각은 15:00 → 서버가 거부
+    W.FM_TEST_NOW = '2026-10-29T12:30:00+09:00'; q('[data-tab="bank"]').click(); q('[data-tab="att"]').click(); await wait(300);
+    qa('#att-blocks [data-act="att-open"]')[1].click(); await wait(1500); stubVideo(); q('[data-act="cam-shoot"]').click(); await wait(400); q('[data-act="cam-save"]').click(); await wait(400);
+    ok(!FAKE_DB.tables.attendance.some(r => r.block === 2) && /실패/.test(q('#camErr').textContent), '기기 시계를 바꿔도 서버 시각으로 거부: ' + q('#camErr').textContent.slice(0, 40));
+    q('[data-act="cam-close"]').click();
+    // 다른 사용자는 남의 출석·사진을 볼 수 없음
+    FAKE_DB.session = { user: { id: 'u-2', email: 'lee@t.kr' } };
+    const c2 = W.supabase.createClient();
+    const seen = await new Promise(res => c2.from('attendance').select('*').then(res));
+    const ph = await c2.storage.from('attendance').createSignedUrl('u-1/2026-10-29-1.jpg', 60);
+    ok(seen.data.length === 0 && ph.error, '다른 사용자는 남의 출석 기록·사진 열람 불가');
+    // 관리자: 사진 열람 + 30일 지난 사진 정리
+    FAKE_DB.tables.attendance.push({ id: 999, user_id: 'u-2', day: '2026-09-01', block: 1, photo_path: 'u-2/2026-09-01-1.jpg', taken_at: '2026-09-01T00:00:00Z' });
+    FAKE_DB.storage['attendance/u-2/2026-09-01-1.jpg'] = { owner: 'u-2' };
+    FAKE_DB.now = T_OUT; FAKE_DB.session = { user: { id: 'u-admin', email: 'admin@t.kr' } };
+    W = await boot(); D = W.document; q = s => D.querySelector(s); qa = s => [...D.querySelectorAll(s)]; W.FM_TEST_NOW = T_OUT;
+    q('[data-tab="admin"]').click(); await wait(500);
+    ok(!FAKE_DB.presence['u-admin'], '관리자는 접속 현황에 나타나지 않음');
+    { // 김(u-1)의 오답 패턴: 채권 4번 풀어 3번 공식 혼동, 나머지 단원은 맞음
+      const H = (d, sc, w, a) => Object.assign({ d, sc, mx: 2, i: 'pt' + d + sc + (w || '') + (a || ''), t: 1 }, w ? { w: [w], wt: 1 } : {}, a ? { a: [a] } : {});
+      FAKE_DB.tables.progress = FAKE_DB.tables.progress.filter(r => !(r.user_id === 'u-1' && r.pid === 'bd-credit'));   // 일일 모의고사가 무작위로 같은 문제를 냈을 수 있어 중복 행을 만들지 않게
+      FAKE_DB.tables.progress.push({ user_id: 'u-1', pid: 'bd-credit', data: { n: 4, box: 1, ok: 1, hist: [H('2026-10-20', 0, 'formula'), H('2026-10-21', 1, 'formula'), H('2026-10-22', 0, 'formula', 'sign'), H('2026-10-23', 2)], u: 1 } });
+      ['cb-replace', 'pf-apt-three', 'dv-binomial', 'cf-mm'].forEach((pid, j) => { if (!FAKE_DB.tables.progress.some(r => r.user_id === 'u-1' && r.pid === pid)) FAKE_DB.tables.progress.push({ user_id: 'u-1', pid, data: { n: 2, box: 2, ok: 2, hist: [H('2026-10-1' + j, 2), H('2026-10-2' + j, 2)], u: 1 } }); });
+      q('[data-tab="admin"]').click(); await wait(500);
+      const card = qa('#admin-body .ucard').find(c => c.querySelector('h3').textContent.includes('김')), pa = card && card.querySelector('.pat-adm');
+      ok(pa && pa.textContent.includes('공식 혼동') && pa.textContent.includes('채권') && pa.textContent.includes('배'), '관리자 화면: 사용자별 오답 패턴 한 줄 — ' + (pa ? pa.textContent.replace(/\s+/g, ' ') : '없음'));
+      ok(!qa('#admin-body .pl-adm').length, '관리자 화면에서 진도 예측 줄 제거');
+      ok(q('#admin-body a[href^="?demo"]') && q('#admin-body a[href^="?demo"]').target === '_blank', '관리자 화면: 체험 모드 열기 링크');
+      q('[data-tab="plan"]').click(); await wait(200);
+      ok(q('#pat-box a[href^="?demo"]'), '관리자: 오답 패턴 화면에도 체험 모드 링크');
+      q('[data-tab="admin"]').click(); await wait(500); }
+    { await wait(300); const box = q('#stAdm'), rows = qa('#stAdm .sa-r'), kim = rows.find(r => r.textContent.includes('김'));
+      const t = FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 't:2026-10-29').data, end = Math.min(new Date(T_OUT).getTime(), t.hb ? t.hb + 3 * 3600e3 : Infinity);
+      const ms = t.segs.reduce((s, g) => s + Math.max(0, Math.min(g.e == null ? end : g.e, end) - g.s), 0), h = s => [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(x => String(x).padStart(2, '0')).join(':');
+      ok(box && !box.hidden && rows.length === 2 && kim && kim.querySelector('b').textContent === h(Math.floor(ms / 1000)) && !rows.some(r => r.textContent.includes('관리자')), '관리자 화면: 내 공부 시간 밑에 사용자별 오늘 공부 시간(김 ' + (kim && kim.querySelector('b').textContent) + ')');
+      const sr = q('#stimer').getBoundingClientRect(), br = box.getBoundingClientRect();
+      ok(sr.bottom <= br.top + 1 && Math.abs(sr.left - br.left) < 2, '사용자별 목록은 내 공부 시간 바로 밑(왼쪽 아래)');
+      q('#stAdm .sa-h').click(); await wait(30); ok(!q('#stAdm .sa-l'), '목록 접기'); q('#stAdm .sa-h').click(); await wait(30); }
+    // 같은 기기를 관리자가 쓰면: 이 기기는 이미 알림이 켜져 있으므로 앱을 열 때 관리자 계정으로 다시 등록
+    await wait(100);
+    ok(FAKE_DB.tables.push_subs.filter(s => s.endpoint === PUSH.endpoint).map(s => s.user_id).join() === 'u-admin', '같은 기기 알림 구독은 지금 로그인한 계정(관리자)으로 옮겨짐');
+    q('#chatFab').click(); await wait(30);
+    ok(q('#chatBody .chat-push').textContent.includes('끄기') && qa('#chatBody .chat-room').length === 3, '관리자 메신저: 알림 켜짐 표시 + 대화 목록 3개');
+    q('[data-act="chat-close"]').click(); await wait(20);
+    { const r = await W.supabase.createClient().from('messages').select('id,room').order('id'); ok(!r.error && r.data.some(m => m.room === 'all') && r.data.some(m => m.room === 'dm:u-1:u-admin') && !r.data.some(m => m.room.startsWith('dm:') && !m.room.split(':').includes('u-admin')), '관리자도 남의 1:1 대화는 볼 수 없음 (전체 대화방 + 자기 1:1만)'); }
+    ok(q('#presence').textContent.includes('김') && q('#presence').textContent.includes('이'), '관리자도 접속 현황은 볼 수 있음');
+    ok(/오늘 공부 시간\(본인 기기 측정\): \d\d:\d\d:\d\d/.test(q('#admin-body').textContent), '관리자 화면에 사용자별 오늘 공부 시간');
+    const pc = q('#admin-body [data-act="att-photo"]');
+    ok(pc && pc.dataset.label.startsWith('김'), '관리자 화면에 김의 출석 ✔');
+    pc.click(); await wait(200);
+    ok(q('#photoOv').classList.contains('on') && q('#photoImg').src.startsWith('data:'), '관리자는 출석 사진 열람');
+    ok(!FAKE_DB.tables.attendance.some(r => r.id === 999) && !FAKE_DB.storage['attendance/u-2/2026-09-01-1.jpg'], '30일 지난 출석 사진·기록 자동 삭제');
+
+    // ── 과목 팩: 사용자는 자기 과목만, 관리자는 과목 선택·사용자별 과목 지정 ──
+    FAKE_DB.now = null;
+    FAKE_DB.tables.profiles.push({ id: 'u-3', name: '최', role: 'member', created_at: '4', subjects: ['net'] });
+    FAKE_DB.users.push({ id: 'u-3', email: 'choi@t.kr', pw: 'pw4' });
+    FAKE_DB.session = { user: { id: 'u-3', email: 'choi@t.kr' } };
+    await boot().catch(() => { }); await wait(300);
+    let sv = null; try { sv = localStorage.getItem('swm-subj'); } catch (e) { }
+    ok(sv === 'net', '네트워크 과목 사용자가 다른 과목 화면으로 열면 자기 과목으로 전환: ' + sv);
+    W = await boot(); D = W.document; q = s => D.querySelector(s); qa = s => [...D.querySelectorAll(s)];
+    ok(!q('#homeEss').hidden && q('#quote').hidden && q('#homeEss').textContent.length > 3, '네트워크 과목: 처음 화면에 오늘의 약술');
+    ok(D.documentElement.dataset.subj === 'net' && q('#bankN').textContent === String(W.SWM_PACKS.net.probs.length) && q('[data-tab="memo"] span').textContent === '암기 카드' && q('#subjSel').hidden, '네트워크 과목 화면: 문제 수·메뉴 이름, 과목이 하나라 과목 선택 숨김');
+    ok(!q('#p-home').textContent.includes('재무') && q('.home-title').textContent === 'MOMENTUM' && q('#menuSubj').textContent.includes('네트워크관리사'), '재무관리 문구가 보이지 않음');
+    q('[data-tab="bank"]').click(); await wait(100);
+    ok(['객관식', 'O/X', '암기 카드'].every(k => q('#f-kind').textContent.includes(k)), '문제은행 유형: 객관식·O/X·암기 카드');
+    { const card = q('#bank-list .card'), opts = card.querySelectorAll('.qin.mc .opt');
+      ok(opts.length === 4 && /^①/.test(opts[0].textContent), '객관식 보기 4개(①~④) 세로 배치');
+      opts[0].click(); card.querySelector('[data-act="grade"]').click(); await wait(1000);   // 서버 저장은 0.7초 모아서
+      const pid = card.id.replace('cd-b-', '');
+      ok(/정답/.test(q('#' + card.id + ' .verdict').textContent) && FAKE_DB.tables.progress.some(r => r.user_id === 'u-3' && r.pid === pid), '객관식 채점 → 서버에 기록: ' + q('#' + card.id + ' .verdict').textContent.slice(0, 30)); }
+    q('[data-tab="mock"]').click(); q('[data-act="mock-start"]').click(); await wait(200);
+    ok(qa('#mock-list .card').length === 50 && !qa('#mock-list .card').some(c => /O\/X ·/.test(c.querySelector('.ctitle').textContent)), '모의고사 50문제 (O/X·암기 카드 제외): ' + qa('#mock-list .card').length + ' ' + qa('#mock-list .card').map(c => c.querySelector('.ctitle').textContent).filter(t => /O\/X/.test(t)).join('|'));
+    { const cnt = {}; qa('#mock-list .card .tag.unit').forEach(t => cnt[t.textContent] = (cnt[t.textContent] || 0) + 1);
+      ok(/^(60|59):/.test(q('#timer').textContent), '네트워크 모의고사 시간 60분: ' + q('#timer').textContent);
+      ok(cnt['TCP/IP'] === 17 && cnt['네트워크 일반'] === 10 && cnt['NOS'] === 18 && cnt['네트워크 운용기기'] === 5, '모의고사 과목 배분 = 실제 시험(17·10·18·5): ' + JSON.stringify(cnt)); }
+    q('[data-tab="memo"]').click(); await wait(100);
+    ok(qa('#memo-list .mcard').length === W.SWM_PACKS.net.probs.filter(d => d.essay).length, '암기 카드 페이지');
+    // 관리자: 모든 과목 선택 가능, 사용자별 과목 지정
+    FAKE_DB.session = { user: { id: 'u-admin', email: 'admin@t.kr' } };
+    W = await boot(); D = W.document; q = s => D.querySelector(s); qa = s => [...D.querySelectorAll(s)];
+    ok(!q('#subjSel').hidden && qa('#subjSel option').length === 4 && q('#subjSel').value === 'net', '관리자는 과목 선택 목록(4과목: 정보처리기사 포함)');
+    q('[data-tab="admin"]').click(); await wait(400);
+    { const choi = qa('#admin-body .ucard').find(c => c.querySelector('h3').textContent.startsWith('최'));
+      ok(choi && choi.querySelector('h3').textContent.includes('네트워크관리사') && choi.querySelector('.sj-u-3[value="net"]').checked && /1\/2\/3회독 1\//.test(choi.textContent), '관리자 화면: 최의 과목(네트워크)과 진도'); }
+    D.querySelector('.sj-u-2[value="fm2"]').checked = false; D.querySelector('.sj-u-2[value="fm1"]').checked = true;
+    q('[data-act="subj-save"][data-uid="u-2"]').click(); await wait(300);
+    ok(JSON.stringify(FAKE_DB.tables.profiles.find(p => p.id === 'u-2').subjects) === '["fm1"]', '관리자가 이의 과목을 1차 재무관리로 지정');
+    { const r = await new Promise(res => { FAKE_DB.session = { user: { id: 'u-1', email: 'kim@t.kr' } }; W.supabase.createClient().from('profiles').update({ subjects: ['net'] }).eq('id', 'u-1').then(res); }); ok(!!r.error, '일반 사용자는 자기 과목을 바꿀 수 없음'); }
+    FAKE_DB.session = { user: { id: 'u-admin', email: 'admin@t.kr' } };
+    try { localStorage.setItem('swm-subj', 'fm1'); } catch (e) { }
+    W = await boot(); D = W.document; q = s => D.querySelector(s); qa = s => [...D.querySelectorAll(s)];
+    ok(q('#homeEss').hidden && !q('#quote').hidden && q('#qText').textContent.length > 3, '약술형이 없는 1차 재무관리: 처음 화면은 명언 유지');
+    ok(q('#homeDm').hidden && W.getComputedStyle(q('#homeDm')).display === 'none', '2차 재무관리가 아닌 과목: 일일 모의고사 숨김');
+    q('[data-tab="bank"]').click(); await wait(100);
+    { const opts = q('#bank-list .card .qin.mc').querySelectorAll('.opt');
+      ok(D.documentElement.dataset.subj === 'fm1' && q('#bankN').textContent === String(W.SWM_PACKS.fm1.probs.length) && opts.length === 5 && q('[data-tab="memo"]').hidden, '1차 재무관리: 5지선다, 약술 메뉴 숨김'); }
+    try { localStorage.removeItem('swm-subj'); } catch (e) { }
+    // 새 기기: 이 기기 저장이 비어도 서버 읽음 위치로 시작 (앱을 다시 띄우므로 맨 끝에서)
+    { const fnv = s => { let h = 0x811c9dc5; for (const ch of s) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193); } return h >>> 0; }, crK = r => fnv('u-1|' + r).toString(36);
+      const room = 'dm:' + ['u-1', 'u-2'].sort().join(':');
+      FAKE_DB.session = { user: { id: 'u-1', email: 'kim@t.kr' } };
+      const r0 = { id: ++FAKE_DB.seq, room, sender: 'u-2', body: '새 기기 확인용', created_at: new Date().toISOString() }; FAKE_DB.tables.messages.push(r0);
+      const row = () => FAKE_DB.tables.progress.find(r => r.user_id === 'u-1' && r.pid === 'chatread');
+      const fresh = async () => { localStorage.removeItem('cpa-fm-chatread:u-1'); localStorage.removeItem('cpa-fm-v1:u-1'); W = await boot(); D = W.document; await wait(400); };
+      row().data.r = {};
+      await fresh();
+      ok(q('#chatN').textContent !== '', '서버에 읽음 위치가 없으면 새 기기에서 안 읽음으로 표시: ' + q('#chatN').textContent);
+      await wait(900);
+      FAKE_DB.tables.messages.forEach(m => { row().data.r[crK(m.room)] = Math.max(+row().data.r[crK(m.room)] || 0, m.id); });
+      row().data.u = Date.now() + 1e6;
+      await fresh();
+      ok(q('#chatN').textContent === '', '서버 읽음 위치가 있으면 새 기기에서도 안 읽음으로 안 뜸: ' + q('#chatN').textContent); }
+  } catch (e) { log.push('ERROR ' + e.message + '\n' + e.stack); }
+  document.getElementById('out').textContent = log.join('\n');
+})();
+</script>
